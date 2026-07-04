@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+*.log
+
+# Virtual environments
+venv/
+.env/
+
+# Kaggle
+.kaggle/
+*.kaggle.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
+
+# Model artifacts
+*.pth
+*.pt
+checkpoints/
+
+# Extracted working files
+docx_extracted.txt
