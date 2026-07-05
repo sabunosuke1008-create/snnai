@@ -68,6 +68,14 @@ SNNAI v6.0.0 では [docs/roadmap_v3.md](docs/roadmap_v3.md) に記載された 
 
 - `gihuhi/snnai-v6-scale-training`: v5.6〜v6.0 大規模 SNN LM 学習 + Transformer 比較（T4 GPU、internet 有効）
 
+## 今後の改良ロードマップ（v6.1 以降）
+
+version 10 の Kaggle 実行結果（SNN が学習せず spike 発火もゼロ）を受け、v6.1 以降の厳密な改良計画を策定しました。
+
+- [docs/roadmap_v6_improvement.md](docs/roadmap_v6_improvement.md) — 診断・アーキテクチャ修正・学習強化・評価・エネルギー推定・最終リリースの段階的計画
+- [models/snnai_v6_large_lm.pt](models/snnai_v6_large_lm.pt) — Kaggle T4 で学習済みの v6 大規模 SNN LM チェックポイント（14 MB）
+- [docs/snnai_test_results.md](docs/snnai_test_results.md) — テスト実行結果と Kaggle version 10 の詳細
+
 ## バージョン v2.0（Phase12 完了）
 
 SNNAI v2.0 では Phase8〜Phase12 の実データ・大規模化・Atari 風実験を統合しました。
