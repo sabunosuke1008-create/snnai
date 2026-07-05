@@ -199,3 +199,62 @@ combined = sum(cache[p] for p in preds)
 | 3 | ERROR | 上記と同様（P100 割り当て） |
 | 4-6 | ERROR/CANCEL | P100 + CPU fallback でタイムアウト（大規模設定） |
 | 7 | COMPLETE | CPU fallback 時にモデルサイズを縮小し 300s 制限内で完了 |
+
+## 10. Kaggle 大規模学習実行結果（version 10 — T4 GPU 成功）
+
+**Version 10** は `kaggle_cli_mcp_kernels_push` の **`acc` パラメータに `"NvidiaTeslaT4"` を指定**したことで、T4 GPU が正しく割り当てられ、CUDA 上で大規模設定のまま正常終了しました。
+
+- **Status**: `COMPLETE`
+- **Clone tag**: `v6.0.7`
+- **使用デバイス**: `cuda`（T4）
+- **SNN 設定**: `embed_dim=256, hidden_dim=1024, num_layers=4, seq_len=128, batch_size=32, time_steps=20, epochs=20`
+- **SNN parameters**: 3,491,072
+- **実行時間目安**: ~60 秒（GPU）
+
+### 実行サマリー
+
+| 項目 | 値 |
+|---|---|
+| Corpus length | 1,115,394 |
+| Vocab size | 65 |
+| Device | cuda |
+| SNN epoch 0 loss / ppl | 4.174 / 65.00 |
+| SNN epoch 19 loss / ppl | 4.174 / 65.00 |
+| Transformer epoch 0 loss / ppl | 4.328 / 75.77 |
+| Transformer epoch 19 loss / ppl | 2.716 / 15.12 |
+| SNN latency | 0.0523 s |
+| Transformer latency | 0.0221 s |
+| Transformer parameters | 3,192,385 |
+| SNN energy report | latency 0.0483 s（spike count は 0 のまま） |
+| 量子化 scale sample | embed.weight / layers.0.weight の min/max/scale 取得確認 |
+| 枝刈り sparsity | 0.154（536,097 / 3,491,072 パラメータ） |
+| 保存ファイル | `snnai_v6_large_lm.pt` |
+
+### T4 割り当ての正しい指定方法
+
+調査の結果、`kernel-metadata.json` の `machine_shape` や `metadata.accelerator` ではなく、**`kaggle_cli_mcp_kernels_push` の `acc` パラメータを使う**のが正しい方法でした。
+
+```python
+kaggle_cli_mcp_kernels_push(
+    folder="environment/kaggle_large_scale",
+    timeout="300",
+    acc="NvidiaTeslaT4"
+)
+```
+
+| 指定方法 | 結果 |
+|---|---|
+| `machine_shape`: `NvidiaTeslaT4` | P100 割り当て |
+| `metadata.accelerator`: `NvidiaTeslaT4` | P100 割り当て |
+| `acc`: `NvidiaTeslaT4Highmem` | P100 割り当て（無効な accelerator ID） |
+| `acc`: `NvidiaTeslaT4` | **T4 割り当て成功** |
+
+### 補足: version 9 で発見したデバイス不一致
+
+version 9 で T4 は割り当てられたものの、`snnai/modules/language/large_scale_lm.py` 内の `torch.zeros(...)` が CPU 上にテンソルを作成し、CUDA モデルとデバイス不一致になってエラーが発生しました。
+
+```text
+RuntimeError: Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!
+```
+
+これを修正するため、`mems` と `mem_out` を入力テンソルと同じデバイスに配置するように変更し、`v6.0.7` としてリリースしました。
