@@ -5,35 +5,14 @@ import torch.nn.functional as F
 
 
 def perplexity(logits, targets, ignore_index=-100):
-    """Compute perplexity from logits and target ids.
-
-    Parameters
-    ----------
-    logits : torch.Tensor
-        (batch, seq_len, vocab_size).
-    targets : torch.Tensor
-        (batch, seq_len) of token ids.
-    ignore_index : int
-        Token id to ignore in loss calculation.
-
-    Returns
-    -------
-    float
-        Perplexity.
-    """
+    """Compute perplexity from logits and target ids."""
     loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), targets.reshape(-1),
                            ignore_index=ignore_index, reduction='mean')
     return math.exp(loss.item())
 
 
 def token_accuracy(logits, targets, ignore_index=-100):
-    """Compute next-token accuracy.
-
-    Returns
-    -------
-    float
-        Accuracy in [0, 1].
-    """
+    """Compute next-token accuracy."""
     pred = logits.argmax(dim=-1)
     mask = targets != ignore_index
     correct = (pred == targets).masked_select(mask).sum().item()
@@ -42,13 +21,7 @@ def token_accuracy(logits, targets, ignore_index=-100):
 
 
 def sequence_accuracy(logits, targets, ignore_index=-100):
-    """Compute full-sequence accuracy.
-
-    Returns
-    -------
-    float
-        Fraction of sequences where every token is correctly predicted.
-    """
+    """Compute full-sequence accuracy."""
     pred = logits.argmax(dim=-1)
     mask = targets != ignore_index
     matches = (pred == targets) | ~mask
@@ -57,17 +30,7 @@ def sequence_accuracy(logits, targets, ignore_index=-100):
 
 
 def bleu_1(reference, hypothesis):
-    """Compute BLEU-1 (unigram precision) for two strings.
-
-    Parameters
-    ----------
-    reference : str
-    hypothesis : str
-
-    Returns
-    -------
-    float
-    """
+    """Compute BLEU-1 (unigram precision) for two strings."""
     ref_tokens = list(reference)
     hyp_tokens = list(hypothesis)
     if not hyp_tokens:
@@ -77,20 +40,13 @@ def bleu_1(reference, hypothesis):
 
 
 def char_error_rate(reference, hypothesis):
-    """Compute character-level edit distance based error rate.
-
-    Returns
-    -------
-    float
-        CER in [0, 1].
-    """
+    """Compute character-level edit distance based error rate."""
     ref = list(reference)
     hyp = list(hypothesis)
     if not ref and not hyp:
         return 0.0
     if not ref:
         return 1.0
-    # Levenshtein distance
     dp = [[0] * (len(hyp) + 1) for _ in range(len(ref) + 1)]
     for i in range(len(ref) + 1):
         dp[i][0] = i
@@ -103,28 +59,33 @@ def char_error_rate(reference, hypothesis):
     return dp[-1][-1] / len(ref)
 
 
+def _encode_one_hot(indices, vocab_size, device):
+    """Convert token ids to one-hot tensor."""
+    one_hot = torch.zeros(indices.size(0), indices.size(1), vocab_size, device=device)
+    one_hot.scatter_(2, indices.unsqueeze(2), 1.0)
+    return one_hot
+
+
+def _model_accepts_spikes(model):
+    """Heuristic: try passing a tiny 4D spike input and see if model accepts it."""
+    try:
+        device = next(model.parameters()).device
+        dummy = torch.zeros(1, 1, 1, 10, device=device)
+        with torch.no_grad():
+            _ = model(dummy)
+        return True
+    except Exception:
+        return False
+
+
 def evaluate_generation(model, tokenizer, prompts, max_chars=100, device='cpu'):
     """Generate text from prompts and compute aggregate metrics.
 
-    Parameters
-    ----------
-    model : torch.nn.Module
-        Language model returning (batch, seq_len, vocab_size) logits.
-    tokenizer : object
-        Tokenizer with encode/decode.
-    prompts : list[str]
-        Seed strings.
-    max_chars : int
-        Number of characters to generate.
-    device : str or torch.device
-
-    Returns
-    -------
-    dict
-        generated texts and aggregate metrics.
+    Auto-detects SNN vs Transformer input format.
     """
     model.eval()
     from snnai.modules.language.tokenizer import SpikeEncoder
+    is_snn = _model_accepts_spikes(model)
     encoder = SpikeEncoder(vocab_size=tokenizer.vocab_size, time_steps=20)
     generated = []
     with torch.no_grad():
@@ -133,9 +94,8 @@ def evaluate_generation(model, tokenizer, prompts, max_chars=100, device='cpu'):
             for _ in range(max_chars):
                 indices = tokenizer.encode(text[-128:])
                 x = torch.tensor([indices], dtype=torch.long, device=device)
-                if hasattr(model, 'forward') and 'Spike' in type(model).__name__:
-                    one_hot = torch.zeros(1, len(indices), tokenizer.vocab_size, device=device)
-                    one_hot.scatter_(2, x.unsqueeze(2), 1.0)
+                if is_snn:
+                    one_hot = _encode_one_hot(x, tokenizer.vocab_size, device)
                     spikes = encoder(x).to(device)
                     out = model(spikes)
                 else:
@@ -144,7 +104,6 @@ def evaluate_generation(model, tokenizer, prompts, max_chars=100, device='cpu'):
                 text += tokenizer.decode([next_id])
             generated.append(text)
 
-    # Aggregate simple metrics vs prompts
     bleus = [bleu_1(ref, hyp) for ref, hyp in zip(prompts, generated)]
     cers = [char_error_rate(ref, hyp) for ref, hyp in zip(prompts, generated)]
     return {
@@ -158,20 +117,11 @@ def evaluate_generation(model, tokenizer, prompts, max_chars=100, device='cpu'):
 def evaluate_model(model, dataloader, tokenizer, device='cpu'):
     """Evaluate a model on a dataloader and return perplexity/accuracy.
 
-    Parameters
-    ----------
-    model : torch.nn.Module
-    dataloader : torch.utils.data.DataLoader
-        Yields (one_hot, targets).
-    tokenizer : object
-    device : str or torch.device
-
-    Returns
-    -------
-    dict
+    Auto-detects SNN vs Transformer input format.
     """
     from snnai.modules.language.tokenizer import SpikeEncoder
     model.eval()
+    is_snn = _model_accepts_spikes(model)
     encoder = SpikeEncoder(vocab_size=tokenizer.vocab_size, time_steps=20)
     total_loss = 0.0
     total_tokens = 0
@@ -180,7 +130,10 @@ def evaluate_model(model, dataloader, tokenizer, device='cpu'):
         for one_hot, targets in dataloader:
             one_hot = one_hot.to(device)
             targets = targets.to(device)
-            x = one_hot.unsqueeze(0).repeat(20, 1, 1, 1)
+            if is_snn:
+                x = one_hot.unsqueeze(0).repeat(20, 1, 1, 1)
+            else:
+                x = one_hot.argmax(dim=-1)
             out = model(x)
             loss = F.cross_entropy(out.reshape(-1, tokenizer.vocab_size), targets.reshape(-1),
                                    reduction='sum')
