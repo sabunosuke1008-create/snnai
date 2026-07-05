@@ -26,6 +26,9 @@ Thumbs.db
 *.pt
 checkpoints/
 
+# Allow specific release checkpoint
+!models/snnai_v6_large_lm.pt
+
 # Extracted working files
 docx_extracted.txt
 kaggle_dataset/
