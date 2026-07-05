@@ -2,6 +2,24 @@
 
 Spiking Neural Network based AI — 線虫・ミツバチ・カラス・タコなど複数の生物の脳構造を参考にした、省電力・モジュラー型 SNN の研究プロジェクト。
 
+## バージョン v6.2.0（SNN 大規模言語モデルの過学習抑制と生成多様性の改善）
+
+SNNAI v6.2.0 では [docs/roadmap_v62.md](docs/roadmap_v62.md) に基づき、v6.1.0 で発覚した過学習・記憶問題に取り組みました。
+
+### v6.2.0 の主な改善点
+
+- **Phase 6.2.1 時系列バリデーション**: `LargeCorpusTrainer` と `fair_compare()` でランダム split から末尾 hold-out（時系列 split）に変更。検証損失が 0 に陥るのを防ぎました。
+- **Phase 6.2.2 サンプリング生成**: `evaluate_generation()` に `temperature` / `top_k` / `do_sample` を追加。貪欲デコーディング以外での生成が可能になりました。
+- **Phase 6.2.3 モデルサイズ調整**: Kaggle notebook で SNN を `embed_dim=128, hidden_dim=512, num_layers=3`（約 63 万パラメータ）に縮小。Tiny Shakespeare に対する過学習を抑制しました。
+- **Phase 6.2.4 大規模コーパス**: WikiText-2 ダウンロードセルを追加（Kaggle 環境では unzip に失敗し Tiny Shakespeare fallback）。
+- **Phase 6.2.5 学習安定化**: label smoothing（0.1）、lr 5e-4、AdamW(weight_decay=0.01)、dropout 0.2 を適用。
+- **Phase 6.2.6 リリース**: v6.2.0 タグ、Kaggle T4 最終検証（version 18）。SNN val ppl 2.15、Transformer val ppl 2.09 を達成。
+
+### 重要なファイル
+
+- [docs/roadmap_v62.md](docs/roadmap_v62.md) — v6.2.0 改良ロードマップ
+- [docs/snnai_test_results.md](docs/snnai_test_results.md) — version 18 の Kaggle 実行結果
+
 ## バージョン v6.1.0（SNN 大規模言語モデルの学習・評価・エネルギー推定の改善）
 
 SNNAI v6.1.0 では [docs/roadmap_v6_improvement.md](docs/roadmap_v6_improvement.md) に基づき、v6.0.0 で発覚した「SNN が学習しない」「spike 発火がゼロ」「エネルギー推定が非現実的」といった課題に取り組みました。

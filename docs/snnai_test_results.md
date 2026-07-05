@@ -325,3 +325,62 @@ RuntimeError: Expected all tensors to be on the same device, but found at least 
 | 13 | ERROR | 同上（snntorch Leaky モジュール検出に修正） |
 | 14 | ERROR | notebook save cell で `comparison` 変数未定義 |
 | 15 | COMPLETE | `comparison_results` 修正、energy cell に実入力、dropout/AdamW 追加 |
+
+## 12. Kaggle 大規模学習実行結果（version 18 — v6.2.2 最終検証）
+
+**Version 18** は v6.2 改良ロードマップの最終検証実行です。`acc="NvidiaTeslaT4"` で T4 GPU が割り当てられ、全セルがエラーなく完了しました。
+
+- **Status**: `COMPLETE`
+- **Clone tag**: `v6.2.2`
+- **使用デバイス**: `cuda`（T4）
+- **SNN 設定**: `embed_dim=128, hidden_dim=512, num_layers=3, seq_len=128, batch_size=32, time_steps=20, epochs=20, dropout=0.2, output_mode='mem_last'`
+- **SNN parameters**: 634,496
+- **実行時間目安**: ~103 秒（GPU）
+
+### 実行サマリー
+
+| 項目 | 値 |
+|---|---|
+| Corpus length | 1,115,394（WikiText-2 ダウンロードは unzip 失敗のため Tiny Shakespeare のみ） |
+| Vocab size | 65 |
+| Device | cuda |
+| SNN epoch 0 loss / ppl | 4.130 / 62.19 |
+| SNN epoch 19 train loss / ppl | 0.740 / 2.10 |
+| SNN epoch 19 val loss / ppl | 0.766 / 2.15 |
+| Transformer epoch 19 train loss / ppl | 0.733 / 2.08 |
+| Transformer epoch 19 val loss / ppl | 0.737 / 2.09 |
+| SNN latency | 0.0666 s |
+| Transformer latency | 0.00139 s |
+| Transformer parameters | 3,192,385 |
+| SNN energy | joules 9.94e-4, latency 0.0696 s, total_spikes 994,332, spikes_per_step 49,717 |
+| 量子化 scale sample | embed.weight / layers.0.weight の min/max/scale 取得確認 |
+| 枝刈り sparsity | 0.108（68,780 / 634,496 パラメータ） |
+| 保存ファイル | `snnai_v6_large_lm.pt` |
+
+### 生成品質
+
+| 項目 | SNN | Transformer |
+|---|---|---|
+| 貪欲生成 | 改行のみ | 改行 + 一部文字 |
+| Sampling (t=0.8, top-k=10) | 改行主体、稀に文字 | 改行主体、稀に文字 |
+| BLEU-1 | 0.101 | 0.101 |
+| CER | 9.33 | 9.33 |
+| avg length | 55.7 | 55.7 |
+
+### 主な改善点
+
+- ✅ **検証損失が 0 にならない** — temporal split + モデル縮小 + 正則化により過学習を抑制
+- ✅ **SNN と Transformer がほぼ同等の ppl**（~2.1）を達成
+- ✅ **SNN エネルギー推定が正常動作**（~1 mJ, ~1M spikes）
+- ✅ 全セルエラーなく完了、モデル保存成功
+- ⚠️ 生成品質はまだ低く、改行に強いバイアスが残存
+- ⚠️ WikiText-2 のダウンロード・解凍が Kaggle 環境で失敗
+
+### 履歴（v6.1 以降）
+
+| Version | 結果 | 主な対応 |
+|---|---|---|
+| 15 | COMPLETE | v6.1.4 最終検証。損失 0、改行のみ生成 |
+| 16 | ERROR | notebook corpus cell で SyntaxError |
+| 17 | ERROR | evaluate_generation の import 漏れ |
+| 18 | COMPLETE | v6.2.2 最終検証。過学習抑制成功 |
