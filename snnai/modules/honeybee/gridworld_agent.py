@@ -51,6 +51,11 @@ class SNNAgent(nn.Module):
             self.fc2.weight.normal_(0, 0.5)
 
     def _spike_encode(self, pos):
+        if isinstance(pos, torch.Tensor):
+            if pos.dim() == 2:
+                pos = (pos[0, 0].item(), pos[0, 1].item())
+            else:
+                pos = (pos[0].item(), pos[1].item())
         rates = place_cell_encode(pos, size=self.size, n_cells=self.n_cells)
         # (n_cells,) -> repeat across time and apply Bernoulli sampling
         spikes = torch.bernoulli(rates.unsqueeze(0).repeat(self.n_steps, 1))
@@ -89,6 +94,33 @@ class SNNAgent(nn.Module):
         counts = out_spikes.sum(dim=0)
         action = int(torch.argmax(counts).item())
         return action, x, hid_spikes, out_spikes
+
+    def select_action_from_spikes(self, x):
+        """Choose an action from pre-computed input spikes.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input spikes of shape (n_steps, batch, n_cells).
+
+        Returns
+        -------
+        int
+            Selected action index.
+        """
+        time_steps, batch_size, _ = x.shape
+        mem1 = torch.zeros(batch_size, self.hidden_size)
+        mem2 = torch.zeros(batch_size, self.n_actions)
+        out_spikes = []
+        for t in range(time_steps):
+            cur1 = self.fc1(x[t])
+            spk1, mem1 = self.lif1(cur1, mem1)
+            cur2 = self.fc2(spk1)
+            spk2, mem2 = self.lif2(cur2, mem2)
+            out_spikes.append(spk2)
+        out_spikes = torch.stack(out_spikes)
+        counts = out_spikes.sum(dim=0)
+        return int(torch.argmax(counts, dim=1)[0].item())
 
     def update(self, spikes_in, spikes_hid, spikes_out, reward, action):
         """Apply R-STDP update favouring the selected action.
