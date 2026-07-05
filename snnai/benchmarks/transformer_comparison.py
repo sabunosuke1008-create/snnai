@@ -6,6 +6,7 @@ import torch.nn as nn
 
 from snnai.benchmarks.large_corpus_trainer import LargeCorpusTrainer, WarmupCosineSchedule
 from snnai.benchmarks.generation_metrics import evaluate_generation, evaluate_model
+from torch.utils.data import Subset
 
 
 class TransformerBaseline(torch.nn.Module):
@@ -58,7 +59,9 @@ def compare_models(snn_model, transformer_model, sample_input, tokenizer=None):
 
 
 def fair_compare(text, tokenizer, snn_model, transformer_model, epochs=20, seq_len=128,
-                 batch_size=32, time_steps=20, device='cpu', lr=1e-3, save_dir=None):
+                 batch_size=32, time_steps=20, device='cpu', lr=1e-3, save_dir=None,
+                 label_smoothing=0.0, gen_temperature=1.0, gen_top_k=None,
+                 gen_do_sample=False):
     """Train both models on the same data and compare metrics fairly.
 
     Parameters
@@ -76,6 +79,14 @@ def fair_compare(text, tokenizer, snn_model, transformer_model, epochs=20, seq_l
     lr : float
     save_dir : str or None
         Directory prefix for saving checkpoints.
+    label_smoothing : float
+        Label smoothing for cross entropy.
+    gen_temperature : float
+        Sampling temperature for generation.
+    gen_top_k : int or None
+        Top-k sampling cutoff.
+    gen_do_sample : bool
+        Use sampling instead of greedy decoding.
 
     Returns
     -------
@@ -89,7 +100,8 @@ def fair_compare(text, tokenizer, snn_model, transformer_model, epochs=20, seq_l
     snn_scheduler = WarmupCosineSchedule(snn_opt, warmup_steps=max(1, total_steps // 10),
                                          total_steps=max(1, total_steps), base_lr=lr, min_lr=1e-5)
     snn_trainer = LargeCorpusTrainer(snn_model, snn_opt, tokenizer, device=device,
-                                     val_ratio=0.05, max_grad_norm=1.0, scheduler=snn_scheduler)
+                                     val_ratio=0.05, max_grad_norm=1.0, scheduler=snn_scheduler,
+                                     split_mode='temporal', label_smoothing=label_smoothing)
     snn_path = f'{save_dir}/snn_best.pt' if save_dir else None
     snn_history = snn_trainer.train(text, epochs=epochs, seq_len=seq_len, batch_size=batch_size,
                                     time_steps=time_steps, save_path=snn_path)
@@ -109,7 +121,9 @@ def fair_compare(text, tokenizer, snn_model, transformer_model, epochs=20, seq_l
     if val_size == 0:
         train_dataset, val_dataset = full_dataset, full_dataset
     else:
-        train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
+        # Temporal hold-out: validate on the last portion of the corpus.
+        train_dataset = Subset(full_dataset, list(range(train_size)))
+        val_dataset = Subset(full_dataset, list(range(train_size, len(full_dataset))))
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True,
                               collate_fn=lambda b: collate_fn(b, tokenizer.vocab_size))
@@ -130,7 +144,7 @@ def fair_compare(text, tokenizer, snn_model, transformer_model, epochs=20, seq_l
             transformer_opt.zero_grad()
             out = transformer_model(inputs)
             loss = nn.functional.cross_entropy(out.reshape(-1, tokenizer.vocab_size), targets.reshape(-1),
-                                               reduction='sum')
+                                               reduction='sum', label_smoothing=label_smoothing)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(transformer_model.parameters(), 1.0)
             transformer_opt.step()
@@ -148,7 +162,7 @@ def fair_compare(text, tokenizer, snn_model, transformer_model, epochs=20, seq_l
                 targets = targets.to(device)
                 out = transformer_model(inputs)
                 loss = nn.functional.cross_entropy(out.reshape(-1, tokenizer.vocab_size), targets.reshape(-1),
-                                                   reduction='sum')
+                                                   reduction='sum', label_smoothing=label_smoothing)
                 total_loss += loss.item()
                 total_tokens += targets.numel()
         val_loss = total_loss / max(1, total_tokens)
@@ -171,8 +185,12 @@ def fair_compare(text, tokenizer, snn_model, transformer_model, epochs=20, seq_l
 
     # Generation metrics
     prompts = ['ROMEO:', 'JULIET:', 'The ']
-    snn_gen = evaluate_generation(snn_model, tokenizer, prompts, max_chars=50, device=device)
-    transformer_gen = evaluate_generation(transformer_model, tokenizer, prompts, max_chars=50, device=device)
+    snn_gen = evaluate_generation(snn_model, tokenizer, prompts, max_chars=50, device=device,
+                                  temperature=gen_temperature, top_k=gen_top_k,
+                                  do_sample=gen_do_sample)
+    transformer_gen = evaluate_generation(transformer_model, tokenizer, prompts, max_chars=50,
+                                          device=device, temperature=gen_temperature,
+                                          top_k=gen_top_k, do_sample=gen_do_sample)
 
     return {
         'snn_history': snn_history,

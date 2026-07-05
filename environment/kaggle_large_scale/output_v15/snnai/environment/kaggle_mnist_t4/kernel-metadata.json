@@ -1,0 +1,14 @@
+{
+  "id": "gihuhi/snnai-phase11-mnist-t4",
+  "title": "SNNAI Phase11 MNIST SNN T4",
+  "code_file": "phase11_mnist_t4.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": false,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "machine_shape": "NvidiaTeslaT4Highmem",
+  "dataset_sources": [],
+  "competition_sources": [],
+  "kernel_sources": []
+}

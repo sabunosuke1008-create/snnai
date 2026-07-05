@@ -2,7 +2,7 @@
 import json
 import math
 import torch
-from torch.utils.data import Dataset, DataLoader, random_split
+from torch.utils.data import Dataset, DataLoader, random_split, Subset
 
 
 class CharLMDataset(Dataset):
@@ -64,7 +64,8 @@ class LargeCorpusTrainer:
     """Full-featured trainer with validation, scheduling, and checkpointing."""
 
     def __init__(self, model, optimizer, tokenizer, device='cpu', val_ratio=0.1,
-                 max_grad_norm=1.0, scheduler=None):
+                 max_grad_norm=1.0, scheduler=None, split_mode='temporal',
+                 label_smoothing=0.0):
         self.model = model.to(device)
         self.optimizer = optimizer
         self.tokenizer = tokenizer
@@ -72,6 +73,8 @@ class LargeCorpusTrainer:
         self.val_ratio = val_ratio
         self.max_grad_norm = max_grad_norm
         self.scheduler = scheduler
+        self.split_mode = split_mode
+        self.label_smoothing = label_smoothing
         self.history = {'train_loss': [], 'val_loss': [], 'train_ppl': [], 'val_ppl': [], 'lr': []}
         self.best_val_loss = float('inf')
 
@@ -82,6 +85,12 @@ class LargeCorpusTrainer:
         if val_size == 0:
             train_dataset = full_dataset
             val_dataset = full_dataset
+        elif self.split_mode == 'temporal':
+            # Hold out the last val_size chunks as validation (preserves temporal order).
+            train_indices = list(range(train_size))
+            val_indices = list(range(train_size, len(full_dataset)))
+            train_dataset = Subset(full_dataset, train_indices)
+            val_dataset = Subset(full_dataset, val_indices)
         else:
             train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
 
@@ -109,7 +118,8 @@ class LargeCorpusTrainer:
                 out = self.model(x)
                 loss = torch.nn.functional.cross_entropy(out.reshape(-1, self.tokenizer.vocab_size),
                                                          targets.reshape(-1),
-                                                         reduction='sum')
+                                                         reduction='sum',
+                                                         label_smoothing=self.label_smoothing)
                 if mode == 'train':
                     loss.backward()
                     if self.max_grad_norm is not None:

@@ -74,10 +74,24 @@ def _model_is_snn(model):
     return False
 
 
-def evaluate_generation(model, tokenizer, prompts, max_chars=100, device='cpu'):
+def _sample_next_token(logits, temperature=1.0, top_k=None):
+    """Sample next token from logits with temperature and top-k filtering."""
+    if temperature <= 0:
+        return logits.argmax(dim=-1)
+    probs = F.softmax(logits / temperature, dim=-1)
+    if top_k is not None and top_k > 0 and top_k < probs.size(-1):
+        topk_probs, topk_indices = torch.topk(probs, top_k)
+        sampled_idx = torch.multinomial(topk_probs, num_samples=1)
+        return topk_indices.gather(-1, sampled_idx).squeeze(-1)
+    return torch.multinomial(probs, num_samples=1).squeeze(-1)
+
+
+def evaluate_generation(model, tokenizer, prompts, max_chars=100, device='cpu',
+                        temperature=1.0, top_k=None, do_sample=False):
     """Generate text from prompts and compute aggregate metrics.
 
-    Auto-detects SNN vs Transformer input format.
+    Auto-detects SNN vs Transformer input format. Supports greedy or
+    temperature/top-k sampling.
     """
     model.eval()
     from snnai.modules.language.tokenizer import SpikeEncoder
@@ -95,7 +109,11 @@ def evaluate_generation(model, tokenizer, prompts, max_chars=100, device='cpu'):
                     out = model(spikes)
                 else:
                     out = model(x)
-                next_id = out[:, -1, :].argmax(dim=-1).item()
+                next_logits = out[:, -1, :]
+                if do_sample:
+                    next_id = _sample_next_token(next_logits, temperature=temperature, top_k=top_k).item()
+                else:
+                    next_id = next_logits.argmax(dim=-1).item()
                 text += tokenizer.decode([next_id])
             generated.append(text)
 

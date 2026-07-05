@@ -1,0 +1,16 @@
+# Core
+numpy
+torch
+
+# SNN frameworks
+snntorch==0.9.4
+brian2==2.10.1
+norse==1.1.0
+bindsnet==0.2.7
+
+# Training / utils
+matplotlib==3.9.0
+jupyter==1.0.0
+
+# Testing
+pytest==8.2.0
