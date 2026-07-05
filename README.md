@@ -2,6 +2,25 @@
 
 Spiking Neural Network based AI — 線虫・ミツバチ・カラス・タコなど複数の生物の脳構造を参考にした、省電力・モジュラー型 SNN の研究プロジェクト。
 
+## バージョン v6.1.0（SNN 大規模言語モデルの学習・評価・エネルギー推定の改善）
+
+SNNAI v6.1.0 では [docs/roadmap_v6_improvement.md](docs/roadmap_v6_improvement.md) に基づき、v6.0.0 で発覚した「SNN が学習しない」「spike 発火がゼロ」「エネルギー推定が非現実的」といった課題に取り組みました。
+
+### v6.1.0 の主な改善点
+
+- **Phase 6.1 診断**: `snnai/benchmarks/diagnostic.py` による勾配・spike 発火率・中間活性の可視化。
+- **Phase 6.2 アーキテクチャ修正**: `LargeScaleSNNLM` に `LayerNorm`、出力層の membrane mean、学習可能 threshold を導入。SNN が実際に学習するようになりました（tiny Shakespeare の小規模実験で loss 3.24 → 2.41、val ppl 12.85 → 11.05）。
+- **Phase 6.3 学習強化**: `LargeCorpusTrainer` を全面的に書き換え、Dataset/DataLoader、train/val 分割、Warmup + Cosine Annealing、勾配クリッピング、最良 checkpoint 保存を実装。
+- **Phase 6.4 評価**: `snnai/benchmarks/generation_metrics.py` で perplexity / accuracy / BLEU-1 / CER を計測。`transformer_comparison.py` の `fair_compare()` で SNN と Transformer を同一データ・同一条件で公平に比較。
+- **Phase 6.5 エネルギー**: `energy_quantification.py` を LIF ニューロンの実際の spike をカウントする方式に変更し、非ゼロの spike ベース消費電力を推定。
+- **Phase 6.6 リリース**: v6.1.0 タグ、Kaggle T4 最終検証、学習済みチェックポイント `models/snnai_v6_large_lm.pt` の更新。
+
+### 重要なファイル
+
+- [docs/roadmap_v6_improvement.md](docs/roadmap_v6_improvement.md) — v6.1.0 改良ロードマップ
+- [docs/snnai_test_results.md](docs/snnai_test_results.md) — テスト結果と Kaggle 実行履歴
+- [models/snnai_v6_large_lm.pt](models/snnai_v6_large_lm.pt) — Kaggle T4 で学習済みの v6 SNN LM チェックポイント
+
 ## バージョン v6.0.0（v2.1〜v6.0 ロードマップ完了）
 
 SNNAI v6.0.0 では [docs/roadmap_v3.md](docs/roadmap_v3.md) に記載された v2.1〜v6.0 の全ステージを完了しました。ローカルではアーキテクチャ検証・単体テストを、大規模学習・Transformer 比較は Kaggle で実行します。
