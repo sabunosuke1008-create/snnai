@@ -57,11 +57,11 @@ class LargeScaleSNNLM(nn.Module):
                 cur = lin(cur)
                 cur = drop(cur)
                 if mems[i] is None:
-                    mems[i] = torch.zeros(batch_size, seq_len, self.hidden_dim)
+                    mems[i] = torch.zeros(batch_size, seq_len, self.hidden_dim, device=cur.device)
                 spk, mems[i] = lif(cur, mems[i])
                 cur = spk
             out_cur = self.fc_out(cur)
-            mem_out = torch.zeros(batch_size, seq_len, self.vocab_size)
+            mem_out = torch.zeros(batch_size, seq_len, self.vocab_size, device=cur.device)
             spk_out, _ = self.lif_out(out_cur, mem_out)
             out_spikes.append(spk_out)
         return torch.stack(out_spikes, dim=0).sum(dim=0)
