@@ -29,3 +29,11 @@ checkpoints/
 # Extracted working files
 docx_extracted.txt
 kaggle_dataset/
+
+# Session / temporary files
+.kimchi/
+.kimchi/debug/
+SNNAI_roadmap.md
+docx_extracted.txt
+kimchi-session-*.html
+二つのアイデアに対する多角的・批判的評価.docx
