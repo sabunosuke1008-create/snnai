@@ -7,7 +7,7 @@
   "is_private": true,
   "enable_gpu": true,
   "enable_internet": true,
-  "accelerator": "NvidiaTeslaT4",
+  "machine_shape": "NvidiaTeslaT4Highmem",
   "dataset_sources": [],
   "competition_sources": [],
   "kernel_sources": [],
