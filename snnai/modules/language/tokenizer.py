@@ -60,7 +60,7 @@ class SpikeEncoder(nn.Module):
             indices = indices.unsqueeze(0)
         batch_size, seq_len = indices.shape
         # One-hot base firing probability per token
-        base = torch.zeros(batch_size, seq_len, self.vocab_size)
+        base = torch.zeros(batch_size, seq_len, self.vocab_size, device=indices.device)
         base.scatter_(2, indices.unsqueeze(2), 1.0)
         # Repeat over time and add noise to make it spike-like
         base = base.unsqueeze(0).repeat(self.time_steps, 1, 1, 1)
