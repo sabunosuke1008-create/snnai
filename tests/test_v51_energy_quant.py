@@ -10,3 +10,7 @@ def test_quantize_energy():
     report = quantize_energy(model, sample, time_steps=5)
     assert "joules" in report
     assert "latency_seconds" in report
+    assert "total_spikes" in report
+    assert "layer_spikes" in report
+    assert report["total_spikes"] >= 0
+    assert report["spikes_per_step"] >= 0
