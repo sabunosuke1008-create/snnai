@@ -66,16 +66,12 @@ def _encode_one_hot(indices, vocab_size, device):
     return one_hot
 
 
-def _model_accepts_spikes(model):
-    """Heuristic: try passing a tiny 4D spike input and see if model accepts it."""
-    try:
-        device = next(model.parameters()).device
-        dummy = torch.zeros(1, 1, 1, 10, device=device)
-        with torch.no_grad():
-            _ = model(dummy)
-        return True
-    except Exception:
-        return False
+def _model_is_snn(model):
+    """Detect SNN by presence of snntorch Leaky modules."""
+    for module in model.modules():
+        if module.__class__.__name__ == 'Leaky':
+            return True
+    return False
 
 
 def evaluate_generation(model, tokenizer, prompts, max_chars=100, device='cpu'):
@@ -85,7 +81,7 @@ def evaluate_generation(model, tokenizer, prompts, max_chars=100, device='cpu'):
     """
     model.eval()
     from snnai.modules.language.tokenizer import SpikeEncoder
-    is_snn = _model_accepts_spikes(model)
+    is_snn = _model_is_snn(model)
     encoder = SpikeEncoder(vocab_size=tokenizer.vocab_size, time_steps=20)
     generated = []
     with torch.no_grad():
@@ -95,7 +91,6 @@ def evaluate_generation(model, tokenizer, prompts, max_chars=100, device='cpu'):
                 indices = tokenizer.encode(text[-128:])
                 x = torch.tensor([indices], dtype=torch.long, device=device)
                 if is_snn:
-                    one_hot = _encode_one_hot(x, tokenizer.vocab_size, device)
                     spikes = encoder(x).to(device)
                     out = model(spikes)
                 else:
@@ -121,7 +116,7 @@ def evaluate_model(model, dataloader, tokenizer, device='cpu'):
     """
     from snnai.modules.language.tokenizer import SpikeEncoder
     model.eval()
-    is_snn = _model_accepts_spikes(model)
+    is_snn = _model_is_snn(model)
     encoder = SpikeEncoder(vocab_size=tokenizer.vocab_size, time_steps=20)
     total_loss = 0.0
     total_tokens = 0
