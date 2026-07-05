@@ -1,42 +1,169 @@
 """Trainer for large-corpus SNN language modeling experiments."""
+import json
+import math
 import torch
+from torch.utils.data import Dataset, DataLoader, random_split
+
+
+class CharLMDataset(Dataset):
+    """Character-level language modeling dataset."""
+
+    def __init__(self, text, tokenizer, seq_len=128):
+        self.tokens = tokenizer.encode(text)
+        self.seq_len = seq_len
+        self.vocab_size = tokenizer.vocab_size
+
+    def __len__(self):
+        return max(1, len(self.tokens) // self.seq_len)
+
+    def __getitem__(self, idx):
+        start = idx * self.seq_len
+        end = start + self.seq_len + 1
+        chunk = self.tokens[start:end]
+        if len(chunk) < self.seq_len + 1:
+            chunk = chunk + [0] * (self.seq_len + 1 - len(chunk))
+        inputs = torch.tensor(chunk[:-1], dtype=torch.long)
+        targets = torch.tensor(chunk[1:], dtype=torch.long)
+        return inputs, targets
+
+
+def collate_fn(batch, vocab_size):
+    """Convert (inputs, targets) into one-hot spike inputs."""
+    inputs = torch.stack([b[0] for b in batch])
+    targets = torch.stack([b[1] for b in batch])
+    batch_size, seq_len = inputs.shape
+    one_hot = torch.zeros(batch_size, seq_len, vocab_size)
+    one_hot.scatter_(2, inputs.unsqueeze(2), 1.0)
+    return one_hot, targets
+
+
+class WarmupCosineSchedule:
+    """Simple warmup + cosine annealing learning rate schedule."""
+
+    def __init__(self, optimizer, warmup_steps, total_steps, base_lr, min_lr=1e-6):
+        self.optimizer = optimizer
+        self.warmup_steps = warmup_steps
+        self.total_steps = total_steps
+        self.base_lr = base_lr
+        self.min_lr = min_lr
+        self.step_count = 0
+
+    def step(self):
+        self.step_count += 1
+        if self.step_count < self.warmup_steps:
+            lr = self.base_lr * self.step_count / self.warmup_steps
+        else:
+            progress = (self.step_count - self.warmup_steps) / max(1, self.total_steps - self.warmup_steps)
+            lr = self.min_lr + (self.base_lr - self.min_lr) * 0.5 * (1 + math.cos(math.pi * progress))
+        for param_group in self.optimizer.param_groups:
+            param_group['lr'] = lr
+        return lr
 
 
 class LargeCorpusTrainer:
-    """Concept trainer that wraps a dataset loader and trains in epochs.
+    """Full-featured trainer with validation, scheduling, and checkpointing."""
 
-    Full-scale runs use the Kaggle notebook; this local version validates
-    shapes and runs a few steps on synthetic data.
-    """
-
-    def __init__(self, model, optimizer, tokenizer, device="cpu"):
+    def __init__(self, model, optimizer, tokenizer, device='cpu', val_ratio=0.1,
+                 max_grad_norm=1.0, scheduler=None):
         self.model = model.to(device)
         self.optimizer = optimizer
         self.tokenizer = tokenizer
         self.device = device
-        self.loss_history = []
+        self.val_ratio = val_ratio
+        self.max_grad_norm = max_grad_norm
+        self.scheduler = scheduler
+        self.history = {'train_loss': [], 'val_loss': [], 'train_ppl': [], 'val_ppl': [], 'lr': []}
+        self.best_val_loss = float('inf')
 
-    def _batch_to_tensor(self, texts, seq_len=16):
-        indices = []
-        for text in texts:
-            encoded = self.tokenizer.encode(text[:seq_len].ljust(seq_len))
-            indices.append(encoded)
-        tensor = torch.tensor(indices, dtype=torch.long)
-        one_hot = torch.zeros(tensor.size(0), tensor.size(1), self.tokenizer.vocab_size)
-        one_hot.scatter_(2, tensor.unsqueeze(2), 1.0)
-        return one_hot.to(self.device)
+    def _make_loaders(self, text, seq_len=128, batch_size=32):
+        full_dataset = CharLMDataset(text, self.tokenizer, seq_len=seq_len)
+        val_size = int(len(full_dataset) * self.val_ratio)
+        train_size = len(full_dataset) - val_size
+        if val_size == 0:
+            train_dataset = full_dataset
+            val_dataset = full_dataset
+        else:
+            train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
 
-    def train_step(self, batch_texts, time_steps=10, seq_len=16):
-        """Run one training step and return loss."""
-        self.model.train()
-        self.optimizer.zero_grad()
-        x = self._batch_to_tensor(batch_texts, seq_len=seq_len)
-        x = x.unsqueeze(0).repeat(time_steps, 1, 1, 1)
-        out = self.model(x)
-        # Simple target: last token prediction
-        target = x[-1, :, -1, :].argmax(dim=-1)
-        loss = torch.nn.functional.cross_entropy(out[:, -1, :], target)
-        loss.backward()
-        self.optimizer.step()
-        self.loss_history.append(float(loss.item()))
-        return float(loss.item())
+        def collate(batch):
+            return collate_fn(batch, self.tokenizer.vocab_size)
+
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate)
+        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate)
+        return train_loader, val_loader
+
+    def _run_epoch(self, loader, time_steps, mode='train'):
+        if mode == 'train':
+            self.model.train()
+        else:
+            self.model.eval()
+        total_loss = 0.0
+        total_tokens = 0
+        with torch.set_grad_enabled(mode == 'train'):
+            for one_hot, targets in loader:
+                one_hot = one_hot.to(self.device)
+                targets = targets.to(self.device)
+                x = one_hot.unsqueeze(0).repeat(time_steps, 1, 1, 1)
+                if mode == 'train':
+                    self.optimizer.zero_grad()
+                out = self.model(x)
+                loss = torch.nn.functional.cross_entropy(out.reshape(-1, self.tokenizer.vocab_size),
+                                                         targets.reshape(-1),
+                                                         reduction='sum')
+                if mode == 'train':
+                    loss.backward()
+                    if self.max_grad_norm is not None:
+                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+                    self.optimizer.step()
+                    if self.scheduler is not None:
+                        self.scheduler.step()
+                total_loss += loss.item()
+                total_tokens += targets.numel()
+        avg_loss = total_loss / max(1, total_tokens)
+        ppl = math.exp(avg_loss)
+        return avg_loss, ppl
+
+    def train(self, text, epochs=20, seq_len=128, batch_size=32, time_steps=20,
+              save_path=None, verbose=True):
+        """Train and validate, returning history dictionary."""
+        train_loader, val_loader = self._make_loaders(text, seq_len=seq_len, batch_size=batch_size)
+
+        for epoch in range(epochs):
+            train_loss, train_ppl = self._run_epoch(train_loader, time_steps, mode='train')
+            val_loss, val_ppl = self._run_epoch(val_loader, time_steps, mode='eval')
+
+            lr = self.optimizer.param_groups[0]['lr']
+            self.history['train_loss'].append(train_loss)
+            self.history['train_ppl'].append(train_ppl)
+            self.history['val_loss'].append(val_loss)
+            self.history['val_ppl'].append(val_ppl)
+            self.history['lr'].append(lr)
+
+            if verbose:
+                print(f'Epoch {epoch}: train_loss={train_loss:.4f} train_ppl={train_ppl:.2f} '
+                      f'val_loss={val_loss:.4f} val_ppl={val_ppl:.2f} lr={lr:.2e}')
+
+            if save_path is not None and val_loss < self.best_val_loss:
+                self.best_val_loss = val_loss
+                self.save_checkpoint(save_path, epoch, val_loss)
+
+        return self.history
+
+    def save_checkpoint(self, path, epoch, val_loss):
+        """Save model checkpoint with metadata."""
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'val_loss': val_loss,
+            'history': self.history,
+        }, path)
+
+    def load_checkpoint(self, path):
+        """Load checkpoint."""
+        checkpoint = torch.load(path, map_location=self.device, weights_only=True)
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        self.history = checkpoint.get('history', self.history)
+        self.best_val_loss = min(self.history.get('val_loss', [float('inf')]))
+        return checkpoint
