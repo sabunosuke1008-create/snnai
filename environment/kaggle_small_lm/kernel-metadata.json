@@ -1,0 +1,14 @@
+{
+  "id": "gihuhi/snnai-v35-small-lm",
+  "title": "SNNAI v3.5 Small LM Training",
+  "code_file": "notebook.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": false,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "machine_shape": "NvidiaTeslaT4Highmem",
+  "dataset_sources": [],
+  "kernel_sources": [],
+  "competition_sources": []
+}
