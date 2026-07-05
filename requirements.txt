@@ -6,7 +6,7 @@ torch==2.3.0
 snntorch==0.9.4
 brian2==2.7.0
 norse==1.1.0
-bindsnet==0.3.3
+bindsnet==0.2.7
 
 # Training / utils
 matplotlib==3.9.0
