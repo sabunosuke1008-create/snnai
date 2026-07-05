@@ -1,15 +1,11 @@
 {
-  "id": "gihuhi/snnai-v6-scale-training",
-  "title": "SNNAI v6 Large Scale SNN LM Training and Transformer Comparison",
-  "code_file": "notebook.ipynb",
-  "language": "python",
-  "kernel_type": "notebook",
-  "is_private": true,
-  "enable_gpu": true,
-  "enable_internet": true,
-  "machine_shape": "NvidiaTeslaT4Highmem",
-  "dataset_sources": [],
-  "competition_sources": [],
-  "kernel_sources": [],
-  "model_sources": []
+ "id": "gihuhi/snnai-v6-scale-training",
+ "title": "SNNAI v6 Large Scale SNN LM Training and Transformer Comparison",
+ "code_file": "notebook.ipynb",
+ "language": "python",
+ "kernel_type": "notebook",
+ "is_private": true,
+ "enable_gpu": true,
+ "enable_internet": true,
+ "accelerator": "NvidiaTeslaT4"
 }
