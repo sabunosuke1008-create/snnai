@@ -4,6 +4,8 @@ import math
 import torch
 from torch.utils.data import Dataset, DataLoader, random_split, Subset
 
+from snnai.benchmarks.homeostatic_loss import HomeostaticRegularizer
+
 
 class CharLMDataset(Dataset):
     """Character-level language modeling dataset."""
@@ -65,7 +67,8 @@ class LargeCorpusTrainer:
 
     def __init__(self, model, optimizer, tokenizer, device='cpu', val_ratio=0.1,
                  max_grad_norm=1.0, scheduler=None, split_mode='temporal',
-                 label_smoothing=0.0):
+                 label_smoothing=0.0, homeostatic_weight=1e-3,
+                 target_firing_rate=0.12):
         self.model = model.to(device)
         self.optimizer = optimizer
         self.tokenizer = tokenizer
@@ -75,7 +78,15 @@ class LargeCorpusTrainer:
         self.scheduler = scheduler
         self.split_mode = split_mode
         self.label_smoothing = label_smoothing
-        self.history = {'train_loss': [], 'val_loss': [], 'train_ppl': [], 'val_ppl': [], 'lr': []}
+        self.homeostatic = HomeostaticRegularizer(
+            target_firing_rate=target_firing_rate,
+            homeostatic_weight=homeostatic_weight,
+        )
+        self.history = {
+            'train_loss': [], 'val_loss': [],
+            'train_ppl': [], 'val_ppl': [],
+            'lr': [], 'mean_firing_rate': [],
+        }
         self.best_val_loss = float('inf')
 
     def _make_loaders(self, text, seq_len=128, batch_size=32):
@@ -108,6 +119,8 @@ class LargeCorpusTrainer:
             self.model.eval()
         total_loss = 0.0
         total_tokens = 0
+        total_firing_rate = 0.0
+        num_spike_batches = 0
         with torch.set_grad_enabled(mode == 'train'):
             for one_hot, targets in loader:
                 one_hot = one_hot.to(self.device)
@@ -115,11 +128,20 @@ class LargeCorpusTrainer:
                 x = one_hot.unsqueeze(0).repeat(time_steps, 1, 1, 1)
                 if mode == 'train':
                     self.optimizer.zero_grad()
-                out = self.model(x)
-                loss = torch.nn.functional.cross_entropy(out.reshape(-1, self.tokenizer.vocab_size),
-                                                         targets.reshape(-1),
-                                                         reduction='sum',
-                                                         label_smoothing=self.label_smoothing)
+                out, spikes = self.model(x, return_spikes=True)
+                ce_loss = torch.nn.functional.cross_entropy(
+                    out.reshape(-1, self.tokenizer.vocab_size),
+                    targets.reshape(-1),
+                    reduction='sum',
+                    label_smoothing=self.label_smoothing,
+                )
+                # Homeostatic regularization is only applied during training to
+                # avoid contaminating validation perplexity.
+                if mode == 'train':
+                    homeo_loss = self.homeostatic(spikes)
+                    loss = ce_loss + homeo_loss
+                else:
+                    loss = ce_loss
                 if mode == 'train':
                     loss.backward()
                     if self.max_grad_norm is not None:
@@ -127,11 +149,17 @@ class LargeCorpusTrainer:
                     self.optimizer.step()
                     if self.scheduler is not None:
                         self.scheduler.step()
-                total_loss += loss.item()
+                total_loss += ce_loss.item()
                 total_tokens += targets.numel()
+                # Log mean firing rate across all hidden layers.
+                with torch.no_grad():
+                    layer_rates = [s.float().mean().item() for s in spikes]
+                    total_firing_rate += sum(layer_rates) / max(1, len(layer_rates))
+                    num_spike_batches += 1
         avg_loss = total_loss / max(1, total_tokens)
         ppl = math.exp(avg_loss)
-        return avg_loss, ppl
+        mean_firing_rate = total_firing_rate / max(1, num_spike_batches)
+        return avg_loss, ppl, mean_firing_rate
 
     def train(self, text, epochs=20, seq_len=128, batch_size=32, time_steps=20,
               save_path=None, verbose=True):
@@ -139,8 +167,8 @@ class LargeCorpusTrainer:
         train_loader, val_loader = self._make_loaders(text, seq_len=seq_len, batch_size=batch_size)
 
         for epoch in range(epochs):
-            train_loss, train_ppl = self._run_epoch(train_loader, time_steps, mode='train')
-            val_loss, val_ppl = self._run_epoch(val_loader, time_steps, mode='eval')
+            train_loss, train_ppl, train_rate = self._run_epoch(train_loader, time_steps, mode='train')
+            val_loss, val_ppl, val_rate = self._run_epoch(val_loader, time_steps, mode='eval')
 
             lr = self.optimizer.param_groups[0]['lr']
             self.history['train_loss'].append(train_loss)
@@ -148,10 +176,12 @@ class LargeCorpusTrainer:
             self.history['val_loss'].append(val_loss)
             self.history['val_ppl'].append(val_ppl)
             self.history['lr'].append(lr)
+            self.history['mean_firing_rate'].append(train_rate)
 
             if verbose:
                 print(f'Epoch {epoch}: train_loss={train_loss:.4f} train_ppl={train_ppl:.2f} '
-                      f'val_loss={val_loss:.4f} val_ppl={val_ppl:.2f} lr={lr:.2e}')
+                      f'val_loss={val_loss:.4f} val_ppl={val_ppl:.2f} '
+                      f'firing_rate={train_rate:.4f} lr={lr:.2e}')
 
             if save_path is not None and val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss

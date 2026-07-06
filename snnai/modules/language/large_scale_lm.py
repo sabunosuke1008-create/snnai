@@ -38,22 +38,27 @@ class LargeScaleSNNLM(nn.Module):
                                  learn_threshold=learn_threshold,
                                  spike_grad=surrogate.fast_sigmoid())
 
-    def forward(self, x):
+    def forward(self, x, return_spikes=False):
         """Forward pass.
 
         Parameters
         ----------
         x : torch.Tensor
             (time_steps, batch, seq_len, vocab_size).
+        return_spikes : bool
+            If True, also return a list of hidden-layer spike tensors for
+            homeostatic regularization.
 
         Returns
         -------
-        torch.Tensor
-            (batch, seq_len, vocab_size).
+        torch.Tensor or tuple
+            (batch, seq_len, vocab_size) logits, optionally with a list of
+            spike tensors of shape (time_steps, batch, seq_len, hidden).
         """
         time_steps, batch_size, seq_len, _ = x.shape
         mems = [None] * self.num_layers
         out_mems = []
+        all_spikes = [[] for _ in range(self.num_layers)] if return_spikes else None
         for t in range(time_steps):
             cur = self.embed(x[t])
             for i in range(self.num_layers):
@@ -67,6 +72,8 @@ class LargeScaleSNNLM(nn.Module):
                 if mems[i] is None:
                     mems[i] = torch.zeros(batch_size, seq_len, self.hidden_dim, device=cur.device)
                 spk, mems[i] = lif(cur, mems[i])
+                if return_spikes:
+                    all_spikes[i].append(spk)
                 cur = spk
             out_cur = self.fc_out(cur)
             if t == 0:
@@ -84,11 +91,17 @@ class LargeScaleSNNLM(nn.Module):
                 out_cur = self.fc_out(self.embed(x[t]))
                 spk_out, mem_out = self.lif_out(out_cur, mem_out)
                 out_spikes.append(spk_out)
-            return torch.stack(out_spikes, dim=0).sum(dim=0)
+            logits = torch.stack(out_spikes, dim=0).sum(dim=0)
         elif self.output_mode == 'mem_last':
-            return out_mems[-1]
+            logits = out_mems[-1]
         else:  # mem_mean
-            return torch.stack(out_mems, dim=0).mean(dim=0)
+            logits = torch.stack(out_mems, dim=0).mean(dim=0)
+
+        if return_spikes:
+            # Stack time dimension for each layer.
+            spikes_list = [torch.stack(layer_spikes, dim=0) for layer_spikes in all_spikes]
+            return logits, spikes_list
+        return logits
 
 
 def count_parameters(model):

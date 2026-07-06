@@ -1,5 +1,7 @@
 """Generation quality metrics for language models."""
 import math
+from collections import Counter
+
 import torch
 import torch.nn.functional as F
 
@@ -86,12 +88,45 @@ def _sample_next_token(logits, temperature=1.0, top_k=None):
     return torch.multinomial(probs, num_samples=1).squeeze(-1)
 
 
+def _apply_repetition_penalty(logits, recent_ids, repetition_penalty=1.0):
+    """Subtract a repetition penalty from logits for recently seen tokens.
+
+    Parameters
+    ----------
+    logits : torch.Tensor
+        1-D logits of shape ``(vocab_size,)``.
+    recent_ids : list[int]
+        Recently generated token ids within the penalty window.
+    repetition_penalty : float
+        1.0 disables the penalty. Values > 1.0 suppress repeated tokens.
+
+    Returns
+    -------
+    torch.Tensor
+        Penalized logits.
+    """
+    if repetition_penalty <= 1.0 or not recent_ids:
+        return logits
+    counts = Counter(recent_ids)
+    penalty = math.log(repetition_penalty)
+    indices = torch.tensor(list(counts.keys()), device=logits.device, dtype=torch.long)
+    # Penalty grows sub-linearly with occurrence count.
+    values = torch.tensor(
+        [penalty * math.log(c + 1) for c in counts.values()],
+        device=logits.device, dtype=logits.dtype,
+    )
+    logits = logits.clone()
+    logits[indices] -= values
+    return logits
+
+
 def evaluate_generation(model, tokenizer, prompts, max_chars=100, device='cpu',
-                        temperature=1.0, top_k=None, do_sample=False):
+                        temperature=1.0, top_k=None, do_sample=False,
+                        repetition_penalty=1.0, penalty_window=16):
     """Generate text from prompts and compute aggregate metrics.
 
     Auto-detects SNN vs Transformer input format. Supports greedy or
-    temperature/top-k sampling.
+    temperature/top-k sampling and repetition penalty.
     """
     model.eval()
     from snnai.modules.language.tokenizer import SpikeEncoder
@@ -101,6 +136,7 @@ def evaluate_generation(model, tokenizer, prompts, max_chars=100, device='cpu',
     with torch.no_grad():
         for prompt in prompts:
             text = prompt
+            generated_ids = []
             for _ in range(max_chars):
                 indices = tokenizer.encode(text[-128:])
                 x = torch.tensor([indices], dtype=torch.long, device=device)
@@ -109,11 +145,17 @@ def evaluate_generation(model, tokenizer, prompts, max_chars=100, device='cpu',
                     out = model(spikes)
                 else:
                     out = model(x)
-                next_logits = out[:, -1, :]
+                next_logits = out[:, -1, :].squeeze(0)
+                next_logits = _apply_repetition_penalty(
+                    next_logits,
+                    recent_ids=generated_ids[-penalty_window:],
+                    repetition_penalty=repetition_penalty,
+                )
                 if do_sample:
-                    next_id = _sample_next_token(next_logits, temperature=temperature, top_k=top_k).item()
+                    next_id = _sample_next_token(next_logits.unsqueeze(0), temperature=temperature, top_k=top_k).item()
                 else:
                     next_id = next_logits.argmax(dim=-1).item()
+                generated_ids.append(next_id)
                 text += tokenizer.decode([next_id])
             generated.append(text)
 

@@ -384,3 +384,34 @@ RuntimeError: Expected all tensors to be on the same device, but found at least 
 | 16 | ERROR | notebook corpus cell で SyntaxError |
 | 17 | ERROR | evaluate_generation の import 漏れ |
 | 18 | COMPLETE | v6.2.2 最終検証。過学習抑制成功 |
+
+## 13. v6.3.0-dev 開発中テスト結果
+
+v6.3.0-dev では以下の変更を実施し、ローカルテストを実行しました。
+
+- `snnai/benchmarks/homeostatic_loss.py` 新規作成
+- `LargeScaleSNNLM.forward()` に `return_spikes=True` 追加
+- `LargeCorpusTrainer` に恒常性正則化ロス統合
+- `generation_metrics.py` / `text_generation_release.py` に反復ペナルティ追加
+- `snnai/utils/download_corpus.py` 新規作成（Python zipfile 解凍）
+- `environment/kaggle_large_scale/notebook.ipynb` のダウンロードセルを Python 化
+- `VERSION` / `kernel-metadata.json` / `README.md` / `snnai/__init__.py` を `v6.3.0-dev` に同期
+
+### ローカル pytest 結果
+
+```
+python -m pytest tests/ --ignore=tests/test_environment.py -q
+118 passed, 1 failed, 5 warnings
+```
+
+失敗した 1 件は `tests/test_bio_nas.py::test_evolution_finds_score_at_least_as_good_as_serial` の `KeyError: 'm2'` で、v6.3.0-dev 変更前から存在する既存の失敗です。
+
+### 新規テスト
+
+| ファイル | 結果 |
+|---|---|
+| `tests/test_v63_homeostasis.py` | 5 passed |
+| `tests/test_v63_repetition_penalty.py` | 3 passed |
+| `tests/test_v63_download_corpus.py` | 2 passed |
+| `tests/test_v63_version_sync.py` | 3 passed |
+| 計 | 13 passed |
