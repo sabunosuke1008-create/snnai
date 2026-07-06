@@ -2,21 +2,21 @@
 
 Spiking Neural Network based AI — 線虫・ミツバチ・カラス・タコなど複数の生物の脳構造を参考にした、省電力・モジュラー型 SNN の研究プロジェクト。
 
-## バージョン v6.3.0-dev（SNN 大規模言語モデルの生成品質根本改善）
+## バージョン v6.3.0（SNN 大規模言語モデルの生成品質根本改善）
 
-SNNAI v6.3.0-dev では [docs/roadmap_v63.md](docs/roadmap_v63.md) に基づき、v6.2.0 で残った「生成テキストが改行・スペースに退化する」問題と「Kaggle での WikiText-2 解凍エラー」に取り組みます。
+SNNAI v6.3.0 では [docs/roadmap_v63.md](docs/roadmap_v63.md) に基づき、v6.2.0 で残った「生成テキストが改行・スペースに退化する」問題と「Kaggle での WikiText-2 解凍エラー」に取り組みます。
 
-### v6.3.0-dev の主な改善点
+### v6.3.0 の主な改善点
 
 - **Phase 6.3.1 恒常性正則化ロス**: `snnai/benchmarks/homeostatic_loss.py` を新規作成。`LargeScaleSNNLM` の各 LIF レイヤーの平均発火率をターゲット帯域（12%）に保ち、SNN が無活動な改行・スペーストークンに沈み込むのを防ぎます。
 - **Phase 6.3.2 反復ペナルティ**: `snnai/benchmarks/generation_metrics.py` に `repetition_penalty` を導入。直近に生成されたトークンの logits を減算し、改行連続・空白連続を抑制します。
 - **Phase 6.3.3 Python ネイティブコーパスダウンロード**: `snnai/utils/download_corpus.py` を新規作成。Kaggle notebook の bash 解凍セルを `requests` + `zipfile` に置き換えます。
-- **Phase 6.3.4 バージョン同期**: `VERSION`、`kernel-metadata.json`、`README.md` を `v6.3.0-dev` に統一します。
+- **Phase 6.3.4 バージョン同期**: `VERSION`、`kernel-metadata.json`、`README.md` を `v6.3.0` に統一します。
 - **Phase 6.3.5 テスト追加**: `tests/test_v63_*.py` 群で恒常性ロス・反復ペナルティ・ダウンロード関数を検証します。
 
 ### 重要なファイル
 
-- [docs/roadmap_v63.md](docs/roadmap_v63.md) — v6.3.0-dev 改良ロードマップ
+- [docs/roadmap_v63.md](docs/roadmap_v63.md) — v6.3.0 改良ロードマップ
 - [snnai/benchmarks/homeostatic_loss.py](snnai/benchmarks/homeostatic_loss.py) — 恒常性正則化ロス
 - [snnai/utils/download_corpus.py](snnai/utils/download_corpus.py) — クロスプラットフォームコーパスダウンロード
 

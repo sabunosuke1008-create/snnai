@@ -415,3 +415,66 @@ python -m pytest tests/ --ignore=tests/test_environment.py -q
 | `tests/test_v63_download_corpus.py` | 2 passed |
 | `tests/test_v63_version_sync.py` | 3 passed |
 | 計 | 13 passed |
+
+## 14. Kaggle 大規模学習実行結果（version 22 — v6.3.0-dev repetition_penalty 有効化）
+
+**Version 22** は v6.3.0-dev の最終検証実行です。`acc="NvidiaTeslaT4"` で T4 GPU が割り当てられ、全セルがエラーなく完了しました。
+
+- **Status**: `COMPLETE`
+- **Clone tag**: `main`
+- **使用デバイス**: `cuda`（T4）
+- **SNN 設定**: `embed_dim=128, hidden_dim=512, num_layers=3, seq_len=128, batch_size=32, time_steps=20, epochs=20, dropout=0.2, output_mode='mem_last'`
+- **SNN parameters**: 634,496
+- **実行時間目安**: ~110 秒（GPU）
+
+### 実行サマリー
+
+| 項目 | 値 |
+|---|---|
+| Corpus length | 1,115,394（WikiText-2 ダウンロード失敗のため Tiny Shakespeare のみ） |
+| Vocab size | 65 |
+| Device | cuda |
+| SNN epoch 0 loss / ppl | 4.597 / 99.16 |
+| SNN epoch 19 train loss / ppl | 0.736 / 2.09 |
+| SNN epoch 19 val loss / ppl | 0.754 / 2.13 |
+| Transformer epoch 19 train loss / ppl | 0.733 / 2.08 |
+| Transformer epoch 19 val loss / ppl | 0.740 / 2.10 |
+| SNN latency | 0.0648 s |
+| Transformer latency | 0.00141 s |
+| Transformer parameters | 3,192,385 |
+| SNN energy | joules 9.87e-4, latency 0.0721 s, total_spikes 987,278, spikes_per_step 49,364 |
+| 量子化 scale sample | embed.weight / layers.0.weight の min/max/scale 取得確認 |
+| 枝刈り sparsity | 0.108（68,692 / 634,496 パラメータ） |
+| 保存ファイル | `snnai_v6_large_lm.pt` |
+
+### 生成品質
+
+| 項目 | SNN | Transformer |
+|---|---|---|
+| 貪欲生成（50 chars） | 改行のみ | 改行 + 一部文字 |
+| Sampling (t=0.8, top-k=10, repetition_penalty=1.5, 200 chars) | 改行主体、稀に `k`, `P`, `;`, `y` など出現 | 改行主体、稀に文字 |
+| BLEU-1 | 0.101 | 0.101 |
+| CER | 9.33 | 9.33 |
+| avg length | 55.7 | 55.7 |
+
+### 主な改善点・観察
+
+- ✅ **検証損失が 0 にならない** — temporal split + モデル縮小 + 正則化により過学習を抑制
+- ✅ **SNN と Transformer がほぼ同等の ppl**（~2.1）を達成
+- ✅ **SNN エネルギー推定が正常動作**（~1 mJ, ~1M spikes）
+- ✅ **repetition_penalty 導入によりサンプリング生成に非改行文字が出現**（`k`, `P`, `;`, `y` 等）
+- ⚠️ 貪欲生成・短い生成（50 chars）では依然として改行が大半
+- ⚠️ WikiText-2 のダウンロード・解凍が Kaggle 環境で失敗（ネットワーク or タイムアウト）
+
+### 履歴（v6.1 以降）
+
+| Version | 結果 | 主な対応 |
+|---|---|---|
+| 15 | COMPLETE | v6.1.4 最終検証。損失 0、改行のみ生成 |
+| 16 | ERROR | notebook corpus cell で SyntaxError |
+| 17 | ERROR | evaluate_generation の import 漏れ |
+| 18 | COMPLETE | v6.2.2 最終検証。過学習抑制成功 |
+| 19 | ERROR | notebook セル内で `\n` が実際の改行として JSON 保存され IndentationError |
+| 20 | ERROR | tokenizer 定義が notebook ダウンロードセルから欠落 |
+| 21 | COMPLETE | tokenizer 復活、repetition_penalty 未適用で生成は改行のみ |
+| 22 | COMPLETE | repetition_penalty=1.5 有効化。サンプリング生成に非改行文字が出現 |
