@@ -478,3 +478,70 @@ python -m pytest tests/ --ignore=tests/test_environment.py -q
 | 20 | ERROR | tokenizer 定義が notebook ダウンロードセルから欠落 |
 | 21 | COMPLETE | tokenizer 復活、repetition_penalty 未適用で生成は改行のみ |
 | 22 | COMPLETE | repetition_penalty=1.5 有効化。サンプリング生成に非改行文字が出現 |
+
+
+## 15. Kaggle 大規模学習実行結果（version 25 — v6.3.1 WikiText-2 ダウンロード修正）
+
+**Version 25** は v6.3.1 リリースに向けた WikiText-2 ダウンロード修正の検証実行です。acc="NvidiaTeslaT4" で T4 GPU が割り当てられ、全セルがエラーなく完了しました。
+
+- **Status**: `COMPLETE`
+- **Clone tag**: `v6.3.1`
+- **使用デバイス**: `cuda`（T4）
+- **SNN 設定**: `embed_dim=128, hidden_dim=512, num_layers=3, seq_len=128, batch_size=32, time_steps=20, epochs=20, dropout=0.2, output_mode='mem_last'`
+- **SNN parameters**: 1,330,816
+- **実行時間目安**: ~110 秒（GPU）
+
+### 実行サマリー
+
+| 項目 | 値 |
+|---|---|
+| Corpus length | 14,467,591（Tiny Shakespeare + WikiText-2 train/valid/test 統合）|
+| Vocab size | 1,153|
+| Device | cuda|
+| SNN epoch 0 loss / ppl | 6.698 / 811.16|
+| SNN epoch 19 train loss / ppl | 1.032 / 2.81|
+| SNN epoch 19 val loss / ppl | 1.051 / 2.86|
+| Transformer epoch 19 train loss / ppl | 1.031 / 2.80|
+| Transformer epoch 19 val loss / ppl | 1.032 / 2.81|
+| SNN latency | 0.0676 s|
+| Transformer latency | 0.00181 s|
+| Transformer parameters | 3,750,529|
+| SNN energy | joules 1.07e-3, latency 0.0760 s, total_spikes 1,067,132, spikes_per_step 53,357|
+| 量子化 scale sample | embed.weight / layers.0.weight の min/max/scale 取得確認 |
+| 枝刈り sparsity | 0.118（156,756 / 1,330,816 パラメータ）|
+| 保存ファイル | `snnai_v6_large_lm.pt` |
+
+### 生成品質
+
+| 項目 | SNN | Transformer |
+|---|---|---|
+| 貪欲生成（50 chars） | 改行のみ | 改行 + 一部文字 |
+| Sampling (t=0.8, top-k=10, repetition_penalty=1.5, 200 chars) | 改行主体 | 改行主体 |
+| BLEU-1 | 0.101 | 0.101 |
+| CER | 9.33 | 9.33 |
+| avg length | 55.7 | 55.7 |
+
+### 主な改善点・観察
+
+- ✅ **WikiText-2 ダウンロードに成功** — `download_wikitext2()` の URL を Hugging Face ミラーに変更し、Kaggle 上で 14M トークンのコーパスを構築
+- ✅ **大規模コーパスでも過学習が抑制されている** — 検証損失が 0 に陥らず、SNN/Transformer ともに ppl ~2.8 を達成
+- ✅ **SNN エネルギー推定が正常動作**（~1.07 mJ, ~1.07M spikes）
+- ✅ **vocab size が 65 → 1,153 に拡大** — WikiText-2 の実際の文字分布を反映
+- ⚠️ 貪欲生成・短い生成では依然として改行が大半
+- ⚠️ コーパス拡大により SNN パラメータ数が 63 万 → 133 万に増加（vocab size の影響を含む）
+
+### 履歴（v6.1 以降）
+
+| Version | 結果 | 主な対応 |
+|---|---|---|
+| 15 | COMPLETE | v6.1.4 最終検証。損失 0、改行のみ生成 |
+| 16 | ERROR | notebook corpus cell で SyntaxError |
+| 17 | ERROR | evaluate_generation の import 漏れ |
+| 18 | COMPLETE | v6.2.2 最終検証。過学習抑制成功 |
+| 19 | ERROR | notebook セル内で `\n` が実際の改行として JSON 保存され IndentationError |
+| 20 | ERROR | tokenizer 定義が notebook ダウンロードセルから欠落 |
+| 21 | COMPLETE | tokenizer 復活、repetition_penalty 未適用で生成は改行のみ |
+| 22 | COMPLETE | repetition_penalty=1.5 有効化。サンプリング生成に非改行文字が出現 |
+| 23 | COMPLETE | UI Internet ON + metadata enable_internet:true。WikiText-2 ダウンロード失敗（URL 問題） |
+| 24 | ERROR | UI Internet ON + metadata enable_internet:false。インターネット接続不可 |
+| 25 | COMPLETE | v6.3.1 WikiText-2 HF ミラー修正。14M トークンコーパスで正常完了 |
