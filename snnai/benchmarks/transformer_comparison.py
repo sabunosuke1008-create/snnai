@@ -61,7 +61,8 @@ def compare_models(snn_model, transformer_model, sample_input, tokenizer=None):
 def fair_compare(text, tokenizer, snn_model, transformer_model, epochs=20, seq_len=128,
                  batch_size=32, time_steps=20, device='cpu', lr=1e-3, save_dir=None,
                  label_smoothing=0.0, gen_temperature=1.0, gen_top_k=None,
-                 gen_do_sample=False):
+                 gen_do_sample=False, gen_repetition_penalty=1.0,
+                 gen_penalty_window=16):
     """Train both models on the same data and compare metrics fairly.
 
     Parameters
@@ -87,6 +88,10 @@ def fair_compare(text, tokenizer, snn_model, transformer_model, epochs=20, seq_l
         Top-k sampling cutoff.
     gen_do_sample : bool
         Use sampling instead of greedy decoding.
+    gen_repetition_penalty : float
+        Repetition penalty for generation (1.0 disables).
+    gen_penalty_window : int
+        Number of recent tokens considered for repetition penalty.
 
     Returns
     -------
@@ -187,10 +192,14 @@ def fair_compare(text, tokenizer, snn_model, transformer_model, epochs=20, seq_l
     prompts = ['ROMEO:', 'JULIET:', 'The ']
     snn_gen = evaluate_generation(snn_model, tokenizer, prompts, max_chars=50, device=device,
                                   temperature=gen_temperature, top_k=gen_top_k,
-                                  do_sample=gen_do_sample)
+                                  do_sample=gen_do_sample,
+                                  repetition_penalty=gen_repetition_penalty,
+                                  penalty_window=gen_penalty_window)
     transformer_gen = evaluate_generation(transformer_model, tokenizer, prompts, max_chars=50,
                                           device=device, temperature=gen_temperature,
-                                          top_k=gen_top_k, do_sample=gen_do_sample)
+                                          top_k=gen_top_k, do_sample=gen_do_sample,
+                                          repetition_penalty=gen_repetition_penalty,
+                                          penalty_window=gen_penalty_window)
 
     return {
         'snn_history': snn_history,
