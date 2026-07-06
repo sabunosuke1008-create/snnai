@@ -1,7 +1,7 @@
 """Practical text generation release API for SNNAI."""
 import torch
 
-from snnai.benchmarks.generation_metrics import _apply_repetition_penalty
+from snnai.benchmarks.generation_metrics import _apply_repetition_penalty, _apply_token_bias, _sample_next_token
 from snnai.modules.language import CharTokenizer, SpikeEncoder
 from snnai.modules.language.large_lm import LargeNextTokenSNN
 
@@ -52,7 +52,9 @@ class TextGenerator:
         return history
 
     def generate(self, prompt, max_chars=50, temperature=1.0,
-                 repetition_penalty=1.0, penalty_window=16):
+                 repetition_penalty=1.0, penalty_window=16,
+                 top_p=None, generation_bias_tokens=None,
+                 generation_bias_weight=0.0):
         """Generate text from a prompt."""
         self.model.eval()
         text = prompt
@@ -68,9 +70,16 @@ class TextGenerator:
                     recent_ids=generated_ids[-penalty_window:],
                     repetition_penalty=repetition_penalty,
                 )
-                logits = logits / max(temperature, 1e-8)
-                probs = torch.softmax(logits, dim=0)
-                next_idx = int(torch.multinomial(probs, 1).item())
+                logits = _apply_token_bias(
+                    logits,
+                    bias_token_ids=generation_bias_tokens,
+                    bias_weight=generation_bias_weight,
+                )
+                next_idx = int(_sample_next_token(
+                    logits,
+                    temperature=temperature,
+                    top_p=top_p,
+                ).item())
                 generated_ids.append(next_idx)
                 text += self.tokenizer.idx_to_char[next_idx]
         return text

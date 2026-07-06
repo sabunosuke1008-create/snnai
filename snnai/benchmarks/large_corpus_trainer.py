@@ -68,7 +68,8 @@ class LargeCorpusTrainer:
     def __init__(self, model, optimizer, tokenizer, device='cpu', val_ratio=0.1,
                  max_grad_norm=1.0, scheduler=None, split_mode='temporal',
                  label_smoothing=0.0, homeostatic_weight=1e-3,
-                 target_firing_rate=0.12):
+                 target_firing_rate=0.12, penalty_tokens=None,
+                 penalty_weight=0.0):
         self.model = model.to(device)
         self.optimizer = optimizer
         self.tokenizer = tokenizer
@@ -82,6 +83,8 @@ class LargeCorpusTrainer:
             target_firing_rate=target_firing_rate,
             homeostatic_weight=homeostatic_weight,
         )
+        self.penalty_tokens = penalty_tokens or []
+        self.penalty_weight = penalty_weight
         self.history = {
             'train_loss': [], 'val_loss': [],
             'train_ppl': [], 'val_ppl': [],
@@ -132,9 +135,18 @@ class LargeCorpusTrainer:
                 ce_loss = torch.nn.functional.cross_entropy(
                     out.reshape(-1, self.tokenizer.vocab_size),
                     targets.reshape(-1),
-                    reduction='sum',
+                    reduction='none',
                     label_smoothing=self.label_smoothing,
                 )
+                # Token-level penalty to suppress over-represented tokens
+                # (e.g., newline, space) during training.
+                if mode == 'train' and self.penalty_tokens and self.penalty_weight > 0.0:
+                    flat_targets = targets.reshape(-1)
+                    penalty_mask = torch.zeros_like(flat_targets, dtype=torch.bool)
+                    for token_id in self.penalty_tokens:
+                        penalty_mask = penalty_mask | (flat_targets == token_id)
+                    ce_loss = ce_loss * (1.0 + self.penalty_weight * penalty_mask.float())
+                ce_loss = ce_loss.sum()
                 # Homeostatic regularization is only applied during training to
                 # avoid contaminating validation perplexity.
                 if mode == 'train':

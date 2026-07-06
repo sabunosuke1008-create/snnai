@@ -60,9 +60,12 @@ def compare_models(snn_model, transformer_model, sample_input, tokenizer=None):
 
 def fair_compare(text, tokenizer, snn_model, transformer_model, epochs=20, seq_len=128,
                  batch_size=32, time_steps=20, device='cpu', lr=1e-3, save_dir=None,
-                 label_smoothing=0.0, gen_temperature=1.0, gen_top_k=None,
+                 label_smoothing=0.0, penalty_tokens=None, penalty_weight=0.0,
+                 gen_temperature=1.0, gen_top_k=None, gen_top_p=None,
                  gen_do_sample=False, gen_repetition_penalty=1.0,
-                 gen_penalty_window=16):
+                 gen_penalty_window=16,
+                 gen_generation_bias_tokens=None,
+                 gen_generation_bias_weight=0.0):
     """Train both models on the same data and compare metrics fairly.
 
     Parameters
@@ -92,6 +95,16 @@ def fair_compare(text, tokenizer, snn_model, transformer_model, epochs=20, seq_l
         Repetition penalty for generation (1.0 disables).
     gen_penalty_window : int
         Number of recent tokens considered for repetition penalty.
+    penalty_tokens : list[int] or None
+        Token ids whose training loss is amplified to suppress over-prediction.
+    penalty_weight : float
+        Training loss penalty weight for penalty_tokens.
+    gen_top_p : float or None
+        Nucleus sampling threshold for generation.
+    gen_generation_bias_tokens : list[int] or None
+        Token ids whose logits are biased during generation.
+    gen_generation_bias_weight : float
+        Logit bias weight applied to gen_generation_bias_tokens.
 
     Returns
     -------
@@ -106,7 +119,9 @@ def fair_compare(text, tokenizer, snn_model, transformer_model, epochs=20, seq_l
                                          total_steps=max(1, total_steps), base_lr=lr, min_lr=1e-5)
     snn_trainer = LargeCorpusTrainer(snn_model, snn_opt, tokenizer, device=device,
                                      val_ratio=0.05, max_grad_norm=1.0, scheduler=snn_scheduler,
-                                     split_mode='temporal', label_smoothing=label_smoothing)
+                                     split_mode='temporal', label_smoothing=label_smoothing,
+                                     penalty_tokens=penalty_tokens,
+                                     penalty_weight=penalty_weight)
     snn_path = f'{save_dir}/snn_best.pt' if save_dir else None
     snn_history = snn_trainer.train(text, epochs=epochs, seq_len=seq_len, batch_size=batch_size,
                                     time_steps=time_steps, save_path=snn_path)
@@ -191,15 +206,20 @@ def fair_compare(text, tokenizer, snn_model, transformer_model, epochs=20, seq_l
     # Generation metrics
     prompts = ['ROMEO:', 'JULIET:', 'The ']
     snn_gen = evaluate_generation(snn_model, tokenizer, prompts, max_chars=50, device=device,
-                                  temperature=gen_temperature, top_k=gen_top_k,
+                                  temperature=gen_temperature, top_k=gen_top_k, top_p=gen_top_p,
                                   do_sample=gen_do_sample,
                                   repetition_penalty=gen_repetition_penalty,
-                                  penalty_window=gen_penalty_window)
+                                  penalty_window=gen_penalty_window,
+                                  generation_bias_tokens=gen_generation_bias_tokens,
+                                  generation_bias_weight=gen_generation_bias_weight)
     transformer_gen = evaluate_generation(transformer_model, tokenizer, prompts, max_chars=50,
                                           device=device, temperature=gen_temperature,
-                                          top_k=gen_top_k, do_sample=gen_do_sample,
+                                          top_k=gen_top_k, top_p=gen_top_p,
+                                          do_sample=gen_do_sample,
                                           repetition_penalty=gen_repetition_penalty,
-                                          penalty_window=gen_penalty_window)
+                                          penalty_window=gen_penalty_window,
+                                          generation_bias_tokens=gen_generation_bias_tokens,
+                                          generation_bias_weight=gen_generation_bias_weight)
 
     return {
         'snn_history': snn_history,

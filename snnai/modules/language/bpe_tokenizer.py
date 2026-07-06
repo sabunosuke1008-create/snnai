@@ -50,6 +50,11 @@ class BPETokenizer:
 
         self.token_to_idx = {t: i for i, t in enumerate(self.vocab)}
         self.idx_to_token = {i: t for i, t in enumerate(self.vocab)}
+        # Maintain a CharTokenizer-compatible interface for pipelines that use
+        # vocab_size / char_to_idx / idx_to_char.
+        self.vocab_size = len(self.vocab)
+        self.char_to_idx = self.token_to_idx
+        self.idx_to_char = self.idx_to_token
 
     def _apply_merge(self, word, pair):
         tokens = word.split()

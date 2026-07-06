@@ -120,13 +120,100 @@ def _apply_repetition_penalty(logits, recent_ids, repetition_penalty=1.0):
     return logits
 
 
+def _apply_token_bias(logits, bias_token_ids, bias_weight=0.0):
+    """Subtract a fixed bias from logits for specified tokens.
+
+    Useful for suppressing frequent but low-information tokens such as
+    newline or space during generation.
+
+    Parameters
+    ----------
+    logits : torch.Tensor
+        1-D logits of shape ``(vocab_size,)``.
+    bias_token_ids : list[int] or None
+        Token ids to penalize.
+    bias_weight : float
+        Positive value subtracted from the logits of bias tokens.
+        0.0 disables the bias.
+
+    Returns
+    -------
+    torch.Tensor
+        Biased logits.
+    """
+    if bias_weight <= 0.0 or not bias_token_ids:
+        return logits
+    logits = logits.clone()
+    indices = torch.tensor(bias_token_ids, device=logits.device, dtype=torch.long)
+    logits[indices] -= bias_weight
+    return logits
+
+
+def _sample_next_token(logits, temperature=1.0, top_k=None, top_p=None):
+    """Sample next token from logits with temperature, top-k and top-p filtering.
+
+    Parameters
+    ----------
+    logits : torch.Tensor
+        Logits of shape ``(batch, vocab_size)`` or ``(vocab_size,)``.
+    temperature : float
+        Sampling temperature. Values <= 0 use greedy decoding.
+    top_k : int or None
+        If set, only sample from the top-k highest probability tokens.
+    top_p : float or None
+        Nucleus sampling threshold. If set, only sample from the smallest
+        set of tokens whose cumulative probability exceeds ``top_p``.
+
+    Returns
+    -------
+    torch.Tensor
+        Sampled token ids of shape ``(batch,)`` or scalar.
+    """
+    if logits.dim() == 1:
+        logits = logits.unsqueeze(0)
+        squeeze = True
+    else:
+        squeeze = False
+
+    if temperature <= 0:
+        result = logits.argmax(dim=-1)
+        return result.squeeze(0) if squeeze else result
+
+    probs = F.softmax(logits / temperature, dim=-1)
+
+    if top_p is not None and 0.0 < top_p < 1.0:
+        sorted_probs, sorted_indices = torch.sort(probs, descending=True, dim=-1)
+        cumsum = torch.cumsum(sorted_probs, dim=-1)
+        # Keep tokens until cumulative probability exceeds top_p.
+        mask = cumsum <= top_p
+        # Always keep at least one token.
+        mask[:, 0] = True
+        filtered_probs = sorted_probs * mask.float()
+        # Renormalize over the kept tokens.
+        filtered_probs = filtered_probs / filtered_probs.sum(dim=-1, keepdim=True).clamp_min(1e-10)
+        sampled_idx = torch.multinomial(filtered_probs, num_samples=1)
+        result = sorted_indices.gather(-1, sampled_idx).squeeze(-1)
+        return result.squeeze(0) if squeeze else result
+
+    if top_k is not None and top_k > 0 and top_k < probs.size(-1):
+        topk_probs, topk_indices = torch.topk(probs, top_k)
+        sampled_idx = torch.multinomial(topk_probs, num_samples=1)
+        result = topk_indices.gather(-1, sampled_idx).squeeze(-1)
+        return result.squeeze(0) if squeeze else result
+
+    result = torch.multinomial(probs, num_samples=1).squeeze(-1)
+    return result.squeeze(0) if squeeze else result
+
+
 def evaluate_generation(model, tokenizer, prompts, max_chars=100, device='cpu',
-                        temperature=1.0, top_k=None, do_sample=False,
-                        repetition_penalty=1.0, penalty_window=16):
+                        temperature=1.0, top_k=None, top_p=None, do_sample=False,
+                        repetition_penalty=1.0, penalty_window=16,
+                        generation_bias_tokens=None, generation_bias_weight=0.0):
     """Generate text from prompts and compute aggregate metrics.
 
     Auto-detects SNN vs Transformer input format. Supports greedy or
-    temperature/top-k sampling and repetition penalty.
+    temperature/top-k/top-p sampling, repetition penalty, and token-level
+    logit bias.
     """
     model.eval()
     from snnai.modules.language.tokenizer import SpikeEncoder
@@ -151,8 +238,18 @@ def evaluate_generation(model, tokenizer, prompts, max_chars=100, device='cpu',
                     recent_ids=generated_ids[-penalty_window:],
                     repetition_penalty=repetition_penalty,
                 )
+                next_logits = _apply_token_bias(
+                    next_logits,
+                    bias_token_ids=generation_bias_tokens,
+                    bias_weight=generation_bias_weight,
+                )
                 if do_sample:
-                    next_id = _sample_next_token(next_logits.unsqueeze(0), temperature=temperature, top_k=top_k).item()
+                    next_id = _sample_next_token(
+                        next_logits.unsqueeze(0),
+                        temperature=temperature,
+                        top_k=top_k,
+                        top_p=top_p,
+                    ).item()
                 else:
                     next_id = next_logits.argmax(dim=-1).item()
                 generated_ids.append(next_id)
