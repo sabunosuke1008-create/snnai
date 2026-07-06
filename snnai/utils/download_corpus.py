@@ -26,7 +26,9 @@ def download_wikitext2(dest_dir="./data/wikitext-2", timeout=60):
         Path to the extracted corpus root (containing wiki.train.raw /
         wiki.valid.raw / wiki.test.raw) on success, or None on failure.
     """
-    url = "https://s3.amazonaws.com/research.metamind.io/wikitext/wikitext-2-raw-v1.zip"
+    # The original Salesforce S3 bucket now returns a 301/403 and is effectively
+    # unreachable. Use the verified Hugging Face mirror used by llama.cpp CI.
+    url = "https://huggingface.co/datasets/ggml-org/ci/resolve/main/wikitext-2-raw-v1.zip"
     dest = Path(dest_dir)
     dest.mkdir(parents=True, exist_ok=True)
     try:
@@ -34,8 +36,8 @@ def download_wikitext2(dest_dir="./data/wikitext-2", timeout=60):
         response.raise_for_status()
         with zipfile.ZipFile(io.BytesIO(response.content)) as z:
             z.extractall(dest)
-        # WikiText-2 raw zip extracts to dest/wikitext-2-raw-v1/.
-        corpus_root = dest / "wikitext-2-raw-v1"
+        # WikiText-2 raw zip extracts to dest/wikitext-2-raw/.
+        corpus_root = dest / "wikitext-2-raw"
         required = ["wiki.train.raw", "wiki.valid.raw", "wiki.test.raw"]
         if all((corpus_root / name).exists() for name in required):
             return corpus_root
