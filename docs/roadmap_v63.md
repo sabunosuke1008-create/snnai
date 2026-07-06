@@ -1,136 +1,141 @@
-# SNNAI v6.3 改良ロードマップ
+# SNNAI v6.3.0 改良ロードマップ
 
 ## 背景
 
-v6.2.0 では過学習を抑制し、SNN LM が Tiny Shakespeare で実際に一般化できることを確認しました。しかし、生成テキストは依然として空白（スペース）や改行（`\n`）トークンに強いバイアスを持ち、連続する改行や空行が大半を占めています。また、Kaggle notebook 内のコーパスダウンロードがシェルコマンド（`!wget` / `!unzip`）に依存しており、実行環境によって失敗します。さらに、リリース時の `VERSION` ファイルと Git タグの整合性を自動化する仕組みがありません。
+SNNAI v6.2.0 では Tiny Shakespeare に対する過学習を抑制し、検証損失が意味のある値（val ppl ≈ 2.15）に収まることを確認しました。しかし、生成テキストは依然として改行（`\n`）やスペースに強く偏っており、実用的な文字列生成には程遠い状態です。また、Kaggle notebook 内で WikiText-2 をダウンロードする際、`!wget` / `!unzip` による bash セルがパーミッションやパス指定の問題で失敗しています。さらにリポジトリ内のバージョン表記が `v6.2.x` のまま混在しており、`v6.3.0-dev` への移行が必要です。
 
-v6.3 では、以下を目指します。
+v6.3.0 ではこれらの課題に対し、**恒常性正則化ロス**、**反復ペナルティ付きデコーディング**、**Python ネイティブなコーパス解凍**、**バージョン同期**の 4 本柱で取り組みます。
+
+---
 
 ## 目標
 
-1. **空白・改行トークンの抑制**: 損失関数とデコーディングの両方から、空白・改行トークンにペナルティを与え、より多様な文字生成を促進する。
-2. **Kaggle ダウンロードのクロスプラットフォーム化**: シェルコマンドに依存せず、Python 標準ライブラリ / `requests` / `zipfile` を使ってコーパスをダウンロード・解凍する。
-3. **VERSION とタグの同期**: `VERSION` ファイル、Git タグ、`kernel-metadata.json` のバージョン記述を一元管理し、ズレを防ぐ。
-4. **Kaggle T4 GPU で v6.3.0 として再検証・リリース**する。
+1. **改行・スペース退化の克服**（最優先）
+   - 学習時: LIF レイヤーの平均発火率をターゲット帯域（10%〜15%）に保つ `HomeostaticRegularizer` を追加し、SNN が「無活動」な改行・スペーストークンに沈み込むのを防ぐ。
+   - 生成時: `repetition_penalty` を導入し、直近に生成されたトークン（特に改行・スペース）の logits を減算して多様性を向上させる。
+2. **Kaggle WikiText-2 解凍エラーの解消**
+   - `notebook.ipynb` の bash セルを廃止し、`requests` + `zipfile` によるクロスプラットフォームな Python 実装に置き換える。
+3. **バージョン情報の同期**
+   - `VERSION`、`README.md`、`environment/kaggle_large_scale/kernel-metadata.json`、notebook 内クローンタグを `v6.3.0-dev` に統一する。
 
 ---
 
-## Phase 6.3.1: 空白・改行抑制ロス（Token-Level Penalty Loss）
+## ステップ 1: 実装対象ファイルと変更計画
 
-### 問題
+### 1.1 `snnai/benchmarks/homeostatic_loss.py`（新規）
 
-現在の `LargeCorpusTrainer` は `CrossEntropyLoss` をそのまま使用しており、空白（token id = スペース文字）や改行（`\n`）が頻出するコーパスでは、モデルがこれらの高頻度トークンに引きずられやすくなります。
+- `HomeostaticRegularizer` クラスを新規作成。
+  - 入力: LIF レイヤーから出力される `spk` テンソル（shape: `(batch, time_steps, hidden)` または `(time_steps, batch, hidden)`）。
+  - 各レイヤーごとに時間方向の平均発火率 `firing_rate = spk.float().mean()` を計算。
+  - 目標発火率 `target_firing_rate=0.12`（12%）からの二乗誤差 `loss = ((firing_rate - target) ** 2).mean()` を返す。
+  - 全レイヤーの損失を合計し、`homeostatic_weight`（例: 1e-3）でスケーリングして主な `CrossEntropyLoss` に加算。
 
-### 対応
+### 1.2 `snnai/benchmarks/large_corpus_trainer.py`（変更）
 
-- `snnai/benchmarks/large_corpus_trainer.py` に `PenaltyCrossEntropy` を新規実装する。
-  - コンストラクタで `penalty_ids`（空白・改行のトークン id リスト）と `penalty_weight`（デフォルト 1.2）を受け取る。
-  - 通常の `cross_entropy` に加え、対象トークンの logit に `penalty_weight` を乗じた追加損失を課す。
-  - 空白・改行の正解ラベルが来た場合でも損失を増やさず、モデルがこれらを選びにくくする方向に作用する。
-- `LargeCorpusTrainer` に `loss_type='penalty_ce' | 'ce'` オプションを追加し、tokenizer から自動的に空白・改行 id を取得して `PenaltyCrossEntropy` に渡す。
+- `LargeCorpusTrainer.__init__` に以下を追加。
+  - `homeostatic_weight: float = 1e-3`
+  - `target_firing_rate: float = 0.12`
+- 訓練ループ内で `model(..., return_spikes=True)` から各 LIF レイヤーの spike を取得。
+  - `LargeScaleSNNLM.forward()` に `return_spikes=False` オプションを追加し、True の場合は `(logits, spikes_list)` を返す。
+- `HomeostaticRegularizer` を呼び出し、CE loss に加算。
+- `validation` 時も spike を取得して発火率のログを出力（損失には加算しない）。
 
-### 期待される効果
+### 1.3 `snnai/modules/language/large_scale_lm.py`（変更）
 
-- 学習中から空白・改行トークンの過剰な選択を抑制し、他の文字トークンの学習が進む。
+- `LargeScaleSNNLM.forward()` のシグネチャを `forward(x, return_spikes=False)` に拡張。
+- 各 LIF レイヤーの spike をリスト `all_spikes` に蓄積。
+- `return_spikes=False` の場合は従来通り `logits` を返す。
+- `return_spikes=True` の場合は `(logits, all_spikes)` を返す。
+- 既存の `output_mode`（`mem_mean` / `mem_last` / `spike_sum`）の動作は維持。
 
----
+### 1.4 `snnai/benchmarks/generation_metrics.py`（変更）
 
-## Phase 6.3.2: デコーディング時の繰り返しペナルティと空白・改行ペナルティ
+- `evaluate_generation()` に `repetition_penalty: float = 1.0`（1.0 = 無効）を追加。
+- 生成ループ内で、直近 `penalty_window`（例: 16）トークンの出現回数をカウント。
+- 各ステップの logits に対し、出現済みトークンの logit から `log(count) * log(repetition_penalty)` を減算。
+- `temperature`、`top_k`、`do_sample` との整合性を保つ（温度スケーリングの直前にペナルティを適用）。
 
-### 問題
+### 1.5 `snnai/benchmarks/text_generation_release.py`（変更）
 
-`evaluate_generation()` や `generate_text()` は argmax または temperature sampling を行うが、空白・改行トークンに対する抑制がないため、生成がこれらのトークンでループしやすい。
+- `generate_text()` および `SNNTextGenerator.generate()` に `repetition_penalty` 引数を追加。
+- 内部で `evaluate_generation()` または同等のロジックを呼び出す場合、引数を透過する。
 
-### 対応
+### 1.6 `environment/kaggle_large_scale/notebook.ipynb`（変更）
 
-- `snnai/benchmarks/generation_metrics.py` の `evaluate_generation()` に以下を追加する。
-  - `repetition_penalty`（デフォルト 1.0 = 無効、例 1.2）: 既に生成されたトークンの logit を下げる。
-  - `newline_space_penalty`（デフォルト 1.0 = 無効、例 1.5）: 空白・改行トークンの logit を下げる。
-- 同様に `snnai/benchmarks/text_generation_release.py` の `generate_text()` も対応する。
-- ペナルティは logit スケーリング後に適用し、温度による softmax より前に行う。
+- 既存の bash セル（`!wget ...` / `!unzip ...`）を削除または無効化。
+- Python セルを追加:
+  ```python
+  import requests, zipfile, io, os
+  url = "https://s3.amazonaws.com/research.metamind.io/wikitext/wikitext-2-v1.zip"
+  r = requests.get(url, timeout=60)
+  r.raise_for_status()
+  z = zipfile.ZipFile(io.BytesIO(r.content))
+  z.extractall("/kaggle/working/wikitext-2")
+  # 成功時は wikitext-2/wikitext-2/train.txt 等を読み込み
+  ```
+- ダウンロード失敗時は Tiny Shakespeare にフォールバックする try/except ブロックを設ける。
 
-### 期待される効果
+### 1.7 `snnai/utils/download_corpus.py`（新規）
 
-- 生成テキストの改行連続・空白連続が減り、文字列の多様性（BLEU/CER も含め）が向上する。
+- `download_wikitext2(dest_dir="./data/wikitext-2", timeout=60) -> Path` を実装。
+- `requests` + `zipfile` を使用し、Windows / Linux / Kaggle のいずれでも動作する。
+- 戻り値として解凍先ディレクトリの `Path` を返す。
+- 失敗時は例外を発生させず `None` を返し、呼び出し側で fallback を選択できる。
 
----
+### 1.8 `VERSION` / `README.md` / `kernel-metadata.json` / `docs/snnai_test_results.md`（変更）
 
-## Phase 6.3.3: Kaggle クロスプラットフォーム・コーパスダウンロード
+- `VERSION` を `v6.3.0-dev` に更新。
+- `README.md` のトップバージョン表記を `v6.3.0-dev` に更新し、v6.3.0 の改善点セクションを追加。
+- `kernel-metadata.json` の `title` を `SNNAI v6.3.0-dev Scale Training` に更新。
+- notebook 内の `git clone -b ...` タグを `v6.3.0-dev`（または作業中は `main`）に更新。
+- `docs/snnai_test_results.md` の「v6.3.0-dev 開発中」エントリを追加。
 
-### 問題
+### 1.9 `tests/test_v63_homeostasis.py`（新規）
 
-Kaggle notebook 内で `!wget` や `!unzip` を使うと、パーミッションエラーやパス解釈の違いで失敗します。v6.2.4 では WikiText-2 の解凍が失敗しました。
+- `HomeostaticRegularizer` のテスト:
+  - 発火率が目標値に近いテンソルでは損失が小さい。
+  - 発火率が目標値から離れているテンソルでは損失が大きい。
+  - 全レイヤー合計のスケーリングが正しい。
+- `LargeScaleSNNLM` の `return_spikes=True` テスト:
+  - 返却される `spikes_list` の長さが LIF レイヤー数と一致。
+  - 各 spike テンソルに `0` または `1` の値のみが含まれる。
 
-### 対応
+### 1.10 `tests/test_v63_repetition_penalty.py`（新規）
 
-- `environment/kaggle_large_scale/notebook.ipynb` のダウンロードセルを Python 実装に置き換える。
-  - `requests`（Kaggle 環境にプリインストール）で zip をダウンロード。
-  - `zipfile` で解凍。
-  - `pathlib` でクロスプラットフォームなパス操作を行う。
-  - ダウンロード失敗時は Tiny Shakespeare にフォールバックする。
-- ローカルでも動作確認できるよう、`snnai/utils/download_corpus.py` として共通関数を切り出す。
+- `evaluate_generation()` において `repetition_penalty > 1.0` の場合、直前トークンが連続生成されにくいことを確認。
+- `repetition_penalty = 1.0` の場合は通常の貪欲生成と一致することを確認。
 
-### 期待される効果
+### 1.11 `tests/test_v63_download_corpus.py`（新規）
 
-- Kaggle 実行環境に依存せず、WikiText-2 などの外部コーパスを安定して取得できる。
+- `download_wikitext2()` の成功時に `train.txt` / `valid.txt` / `test.txt` が存在することを検証（実際のネットワークアクセスは `pytest` 実行時に optional とし、失敗時は skip）。
+- フォールバック動作をモックで確認。
 
----
+### 1.12 `tests/test_v63_version_sync.py`（新規）
 
-## Phase 6.3.4: VERSION・タグ・ノートブックのバージョン同期
-
-### 問題
-
-`VERSION` ファイル、Git タグ、`kernel-metadata.json` のタイトル、notebook 内の clone タグが手動更新のため、リリース時に不整合が生じるリスクがあります。
-
-### 対応
-
-- `snnai/__init__.py`（または新規 `snnai/version.py`）で `__version__` を `VERSION` ファイルから読み込む。
-- `environment/kaggle_large_scale/generate_notebook.py` に、現在の `VERSION` と Git タグを自動反映するオプションを追加する。
-  - `--version` 指定時に `kernel-metadata.json` のタイトルと notebook 内の clone タグを更新。
-- `kernel-metadata.json` の `title` を `SNNAI v{VERSION} Scale Training` 形式に統一する。
-
-### 期待される効果
-
-- リリース作業時に `VERSION` ファイルを更新するだけで、他のバージョン表記が自動的に追従する。
-
----
-
-## Phase 6.3.5: ローカルテスト追加
-
-### 対応
-
-- `tests/test_v63_penalty_loss.py`:
-  - `PenaltyCrossEntropy` が空白・改行トークンの選択を抑制することを確認。
-  - 通常 CE と比較して、ペナルティ対象トークンの確率が下がることを検証。
-- `tests/test_v63_generation_penalty.py`:
-  - `repetition_penalty` と `newline_space_penalty` が生成結果に影響することを確認。
-- `tests/test_v63_version_sync.py`:
-  - `VERSION` ファイル、`snnai/__version__`、`kernel-metadata.json` の `title` が一致することを確認。
-- `tests/test_v63_download_corpus.py`:
-  - `download_corpus()` のフォールバック動作をモックで確認。
-
-### 期待される効果
-
-- 各機能がローカルで動作確認でき、Kaggle への持ち込み前に品質を担保できる。
+- `VERSION` ファイルの内容が `v6.3.0-dev` であることを確認。
+- `kernel-metadata.json` の `title` に `v6.3.0-dev` が含まれることを確認。
 
 ---
 
-## Phase 6.3.6: Kaggle 最終検証と v6.3.0 リリース
+## ステップ 2: 実装順序
 
-### 対応
+1. **恒常性ロス**: `homeostatic_loss.py` → `large_scale_lm.py`（`return_spikes`） → `large_corpus_trainer.py`（統合）
+2. **反復ペナルティ**: `generation_metrics.py` → `text_generation_release.py`
+3. **コーパスダウンロード**: `download_corpus.py` → `notebook.ipynb`
+4. **バージョン同期**: `VERSION` → `kernel-metadata.json` → `README.md` → `docs/snnai_test_results.md` → notebook clone タグ
+5. **テスト追加**: `test_v63_*.py` 群
+6. **ローカルテスト実行と Kaggle notebook push**
 
-- 全修正を反映した notebook を push する。
-- `VERSION` を `v6.3.0` に更新する。
-- tag `v6.3.0` を作成・push する。
-- Kaggle T4 GPU で `COMPLETE` を確認する。
-- `docs/snnai_test_results.md` に version N の結果を追記する。
+---
 
-### 成功基準
+## ステップ 3: 成功基準
 
-- Kaggle version N が `COMPLETE`
-- 検証損失が 0 でない
-- 生成テキストに空白・改行以外の文字が増加（CER 改善、BLEU 向上）
-- ローカルテストが全て passed
+- ローカル pytest: 既存 105 tests + 新規 tests が全て passed
+- `LargeCorpusTrainer` が `homeostatic_weight > 0` で学習可能
+- `evaluate_generation()` が `repetition_penalty > 1.0` で改行連続を抑制
+- `download_wikitext2()` が Kaggle 環境で `!unzip` なしに動作
+- Kaggle notebook version N が T4 GPU で `COMPLETE`
+- 生成テキストに改行・スペース以外の文字が増加（CER 改善を目指す）
 
 ---
 
@@ -138,5 +143,5 @@ Kaggle notebook 内で `!wget` や `!unzip` を使うと、パーミッション
 
 - モデル容量をコーパス規模に合わせることで過学習は抑制できる。
 - 時系列 split で val_loss が 0 に陥るのを防げる。
-- temperature / top-k sampling は多様性を出すが、根本的なバイアス解消には損失関数・デコーディング両方のペナルティが必要。
-- 外部コーパス取得はシェルコマンドに依存しない Python 実装にすべき。
+- SNN の「無活動」は改行・スペーストークンに学習が偏る要因の一つ。
+- bash コマンドは Kaggle 環境で不安定である。
