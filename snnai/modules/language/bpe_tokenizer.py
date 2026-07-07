@@ -1,5 +1,5 @@
 """Minimal byte-pair encoding (BPE) tokenizer for SNNAI."""
-import re
+from collections import Counter, defaultdict
 
 
 class BPETokenizer:
@@ -11,42 +11,52 @@ class BPETokenizer:
         Training texts.
     vocab_size : int, optional
         Target vocabulary size (default 50).
+    max_train_bytes : int, optional
+        Maximum number of bytes to use for training the BPE merge table.
+        Useful when the full corpus is very large and training would be too
+        slow. If None, the full corpus is used.
     """
 
-    def __init__(self, texts, vocab_size=50):
-        # Pre-tokenize into words with end-of-word symbol </w>
-        word_freqs = {}
-        for t in texts:
-            for w in t.lower().split():
-                w = " ".join(list(w)) + " </w>"
-                word_freqs[w] = word_freqs.get(w, 0) + 1
+    def __init__(self, texts, vocab_size=50, max_train_bytes=None):
+        train_text = ''.join(texts)
+        if max_train_bytes is not None and len(train_text) > max_train_bytes:
+            train_text = train_text[:max_train_bytes]
+
+        # Build word frequencies as tuples of characters ending with </w>.
+        word_freqs = Counter()
+        for w in train_text.lower().split():
+            word_freqs[tuple(list(w)) + ('</w>',)] += 1
 
         # Initial vocab: characters + </w>
         chars = set()
-        for w in word_freqs:
-            chars.update(w.split())
+        for tokens in word_freqs:
+            chars.update(tokens)
         self.vocab = sorted(chars)
 
+        # Initial pair frequencies.
+        pair_freqs = defaultdict(int)
+        for tokens, freq in word_freqs.items():
+            for i in range(len(tokens) - 1):
+                pair_freqs[(tokens[i], tokens[i + 1])] += freq
+
         self.merges = []
-        while len(self.vocab) < vocab_size:
-            pairs = {}
-            for word, freq in word_freqs.items():
-                tokens = word.split()
-                for i in range(len(tokens) - 1):
-                    pair = (tokens[i], tokens[i + 1])
-                    pairs[pair] = pairs.get(pair, 0) + freq
-            if not pairs:
-                break
-            best = max(pairs, key=pairs.get)
+        while len(self.vocab) < vocab_size and pair_freqs:
+            best = max(pair_freqs, key=pair_freqs.get)
             self.merges.append(best)
             merged = best[0] + best[1]
             if merged not in self.vocab:
                 self.vocab.append(merged)
-            # Update word representations
-            new_word_freqs = {}
-            for word, freq in word_freqs.items():
-                new_word_freqs[self._apply_merge(word, best)] = freq
+
+            # Update word representations and pair frequencies.
+            new_word_freqs = Counter()
+            new_pair_freqs = defaultdict(int)
+            for tokens, freq in word_freqs.items():
+                new_tokens = self._apply_merge(tokens, best)
+                new_word_freqs[new_tokens] += freq
+                for i in range(len(new_tokens) - 1):
+                    new_pair_freqs[(new_tokens[i], new_tokens[i + 1])] += freq
             word_freqs = new_word_freqs
+            pair_freqs = new_pair_freqs
 
         self.token_to_idx = {t: i for i, t in enumerate(self.vocab)}
         self.idx_to_token = {i: t for i, t in enumerate(self.vocab)}
@@ -56,8 +66,8 @@ class BPETokenizer:
         self.char_to_idx = self.token_to_idx
         self.idx_to_char = self.idx_to_token
 
-    def _apply_merge(self, word, pair):
-        tokens = word.split()
+    @staticmethod
+    def _apply_merge(tokens, pair):
         merged = pair[0] + pair[1]
         new_tokens = []
         i = 0
@@ -68,16 +78,16 @@ class BPETokenizer:
             else:
                 new_tokens.append(tokens[i])
                 i += 1
-        return " ".join(new_tokens)
+        return tuple(new_tokens)
 
     def encode(self, text):
         """Encode text to token indices."""
         out = []
         for w in text.lower().split():
-            word = " ".join(list(w)) + " </w>"
+            tokens = tuple(list(w)) + ('</w>',)
             for pair in self.merges:
-                word = self._apply_merge(word, pair)
-            for t in word.split():
+                tokens = self._apply_merge(tokens, pair)
+            for t in tokens:
                 out.append(self.token_to_idx.get(t, 0))
         return out
 
