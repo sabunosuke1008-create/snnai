@@ -23,21 +23,29 @@ class BPETokenizer:
             train_text = train_text[:max_train_bytes]
 
         # Build word frequencies as tuples of characters ending with </w>.
-        word_freqs = Counter()
+        raw_word_freqs = Counter()
         for w in train_text.lower().split():
-            word_freqs[tuple(list(w)) + ('</w>',)] += 1
+            raw_word_freqs[tuple(list(w)) + ('</w>',)] += 1
 
         # Initial vocab: characters + </w>
         chars = set()
-        for tokens in word_freqs:
+        for tokens in raw_word_freqs:
             chars.update(tokens)
         self.vocab = sorted(chars)
 
-        # Initial pair frequencies.
-        pair_freqs = defaultdict(int)
-        for tokens, freq in word_freqs.items():
+        # Indexed word storage: word_id -> (tokens, freq)
+        word_freqs = {}
+        for idx, (tokens, freq) in enumerate(raw_word_freqs.items()):
+            word_freqs[idx] = [list(tokens), freq]
+
+        # Pair frequencies and inverted index.
+        pair_freqs = Counter()
+        pair_to_words = defaultdict(set)
+        for idx, (tokens, freq) in word_freqs.items():
             for i in range(len(tokens) - 1):
-                pair_freqs[(tokens[i], tokens[i + 1])] += freq
+                pair = (tokens[i], tokens[i + 1])
+                pair_freqs[pair] += freq
+                pair_to_words[pair].add(idx)
 
         self.merges = []
         while len(self.vocab) < vocab_size and pair_freqs:
@@ -47,16 +55,29 @@ class BPETokenizer:
             if merged not in self.vocab:
                 self.vocab.append(merged)
 
-            # Update word representations and pair frequencies.
-            new_word_freqs = Counter()
-            new_pair_freqs = defaultdict(int)
-            for tokens, freq in word_freqs.items():
+            # Update only words that contain the merged pair.
+            affected = list(pair_to_words.get(best, set()))
+            for idx in affected:
+                tokens, freq = word_freqs[idx]
                 new_tokens = self._apply_merge(tokens, best)
-                new_word_freqs[new_tokens] += freq
+                if new_tokens == tokens:
+                    continue
+
+                # Decrement old pair frequencies.
+                for i in range(len(tokens) - 1):
+                    pair = (tokens[i], tokens[i + 1])
+                    pair_freqs[pair] -= freq
+                    if pair_freqs[pair] <= 0:
+                        del pair_freqs[pair]
+                    pair_to_words[pair].discard(idx)
+
+                # Increment new pair frequencies.
                 for i in range(len(new_tokens) - 1):
-                    new_pair_freqs[(new_tokens[i], new_tokens[i + 1])] += freq
-            word_freqs = new_word_freqs
-            pair_freqs = new_pair_freqs
+                    pair = (new_tokens[i], new_tokens[i + 1])
+                    pair_freqs[pair] += freq
+                    pair_to_words[pair].add(idx)
+
+                word_freqs[idx][0] = new_tokens
 
         self.token_to_idx = {t: i for i, t in enumerate(self.vocab)}
         self.idx_to_token = {i: t for i, t in enumerate(self.vocab)}
@@ -78,13 +99,13 @@ class BPETokenizer:
             else:
                 new_tokens.append(tokens[i])
                 i += 1
-        return tuple(new_tokens)
+        return new_tokens
 
     def encode(self, text):
         """Encode text to token indices."""
         out = []
         for w in text.lower().split():
-            tokens = tuple(list(w)) + ('</w>',)
+            tokens = list(w) + ['</w>']
             for pair in self.merges:
                 tokens = self._apply_merge(tokens, pair)
             for t in tokens:
