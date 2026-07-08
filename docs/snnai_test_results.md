@@ -1,7 +1,7 @@
 # SNNAI テスト実行結果レポート
 
-**Version**: `v6.0.5`  
-**Test date**: 2026-07-05  
+**Version**: `v6.4.6`  
+**Test date**: 2026-07-08  
 **Repository**: https://github.com/sabunosuke1008-create/snnai
 
 ---
@@ -545,3 +545,77 @@ python -m pytest tests/ --ignore=tests/test_environment.py -q
 | 23 | COMPLETE | UI Internet ON + metadata enable_internet:true。WikiText-2 ダウンロード失敗（URL 問題） |
 | 24 | ERROR | UI Internet ON + metadata enable_internet:false。インターネット接続不可 |
 | 25 | COMPLETE | v6.3.1 WikiText-2 HF ミラー修正。14M トークンコーパスで正常完了 |
+
+## 16. Kaggle 大規模学習実行結果（version 1 — v6.4.6 BPE サブワード統合）
+
+**Version 1** は v6.4.6 リリースに向けた **BPE サブワードトークナイザ統合**の検証実行です。新規 kernel slug `gihuhi/snnai-v6-4-6` を作成し、`acc="NvidiaTeslaT4"` で T4 GPU が割り当てられ、全セルがエラーなく完了しました。
+
+- **Status**: `COMPLETE`
+- **Kernel**: `gihuhi/snnai-v6-4-6`
+- **URL**: https://www.kaggle.com/code/gihuhi/snnai-v6-4-6
+- **Clone tag**: `v6.4.6`
+- **使用デバイス**: `cuda`（T4）
+- **SNN 設定**: `embed_dim=128, hidden_dim=512, num_layers=3, seq_len=128, batch_size=32, time_steps=20, epochs=20, dropout=0.2, output_mode='mem_last'`
+- **SNN parameters**: 1,903,616
+- **実行時間目安**: ~40 分（GPU）
+
+### 実行サマリー
+
+| 項目 | 値 |
+|---|---|
+| Corpus length | 14,467,591（Tiny Shakespeare + WikiText-2 train/valid/test 統合）|
+| BPE vocab size | 2,048 |
+| Data shape | `torch.Size([1, 4,783,465])`（BPE トークン列） |
+| Device | cuda |
+| SNN final train loss / ppl | 5.001 / 148.58 |
+| SNN final val loss / ppl | 5.083 / 161.18 |
+| Transformer final train loss / ppl | 3.683 / 39.75 |
+| Transformer final val loss / ppl | 3.869 / 47.90 |
+| SNN latency | 0.0607 s |
+| Transformer latency | 0.00189 s |
+| Transformer parameters | 4,209,664 |
+| SNN energy | joules 7.33e-4, latency 0.0774 s, total_spikes 733,240, spikes_per_step 36,662 |
+| 量子化 scale sample | embed.weight / layers.0.weight の min/max/scale 取得確認 |
+| 枝刈り sparsity | 0.0805（153,172 / 1,903,616 パラメータ） |
+| 保存ファイル | `snnai_v6_large_lm.pt` |
+
+### 生成品質
+
+| 項目 | SNN | Transformer |
+|---|---|---|
+| 貪欲生成 | `ROMEO:i,andre,n'taandcanbegiven,...` | `ROMEO:romeo:ingharomebalobalceloand...` |
+| BLEU-1 | 0.107 | 0.259 |
+| CER | 20.90 | 26.03 |
+| avg length | 121.0 | 143.7 |
+
+### 主な改善点・観察
+
+- ✅ **BPE サブワード統合に成功** — 文字レベル vocab 1,153 → BPE vocab 2,048。実用的なサブワード（カンマ、接尾辞、固有名詞の一部など）が獲得できている。
+- ✅ **生成が改行のみから脱却** — SNN/Transformer ともに改行だけでなく、カンマや文字列が連なった断片が出現。
+- ✅ **過学習は抑制されている** — 検証損失が 0 に陥らず、SNN/Transformer ともに val ppl が有限値を保つ。
+- ✅ **大規模コーパスを正常に処理** — WikiText-2 統合済み 14M 文字コーパスで BPE 学習・モデル学習がエラーなく完了。
+- ✅ **SNN エネルギー推定が正常動作**（~0.73 mJ, ~0.73M spikes）
+- ⚠️ **SNN の perplexity（161）が Transformer（48）を大きく上回る** — BPE 予測がまだ不安定。より大きなモデル、より長い学習、または BPE 学習コーパス増強が必要。
+- ⚠️ **生成品質はまだ低い** — 文法的な英語には達しておらず、サブワードの羅列に近い。コーパスの「=」見出しや改行が多い影響も考えられる。
+
+### 履歴（v6.1 以降）
+
+| Version | 結果 | 主な対応 |
+|---|---|---|
+| 15 | COMPLETE | v6.1.4 最終検証。損失 0、改行のみ生成 |
+| 16 | ERROR | notebook corpus cell で SyntaxError |
+| 17 | ERROR | evaluate_generation の import 漏れ |
+| 18 | COMPLETE | v6.2.2 最終検証。過学習抑制成功 |
+| 19 | ERROR | notebook セル内で `\n` が実際の改行として JSON 保存され IndentationError |
+| 20 | ERROR | tokenizer 定義が notebook ダウンロードセルから欠落 |
+| 21 | COMPLETE | tokenizer 復活、repetition_penalty 未適用で生成は改行のみ |
+| 22 | COMPLETE | repetition_penalty=1.5 有効化。サンプリング生成に非改行文字が出現 |
+| 23 | COMPLETE | UI Internet ON + metadata enable_internet:true。WikiText-2 ダウンロード失敗（URL 問題） |
+| 24 | ERROR | UI Internet ON + metadata enable_internet:false。インターネット接続不可 |
+| 25 | COMPLETE | v6.3.1 WikiText-2 HF ミラー修正。14M トークンコーパスで正常完了 |
+| 26 | ERROR | v6.4.0 BPE 統合：`ImportError: cannot import name 'BPETokenizer'` |
+| 27 | ERROR | v6.4.1 BPE notebook：`penalty_tokens` が BPE でも実行され `IndexError` |
+| 28 | ERROR | v6.4.2 notebook JSON 修正が適用されず、同様に `IndexError` |
+| 29 | ERROR | v6.4.3 notebook が Tensor `data` を `trainer.train()` に渡し `AttributeError` |
+| 30 | ERROR/QUEUED | v6.4.4/v6.4.5：旧 kernel slug で queue 混雑 + BPE 学習が遅くタイムアウト |
+| v6.4.6 v1 | COMPLETE | 新 kernel slug `gihuhi/snnai-v6-4-6` + 反転インデックス BPE。正常完了 |
