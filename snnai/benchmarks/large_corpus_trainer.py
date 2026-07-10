@@ -93,7 +93,7 @@ class LargeCorpusTrainer:
         }
         self.best_val_loss = float('inf')
 
-    def _make_loaders(self, text, seq_len=128, batch_size=32):
+    def _make_loaders(self, text, seq_len=128, batch_size=32, drop_last=False):
         full_dataset = CharLMDataset(text, self.tokenizer, seq_len=seq_len)
         val_size = int(len(full_dataset) * self.val_ratio)
         train_size = len(full_dataset) - val_size
@@ -112,8 +112,10 @@ class LargeCorpusTrainer:
         def collate(batch):
             return collate_fn(batch, self.tokenizer.vocab_size)
 
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate)
-        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate)
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True,
+                                  collate_fn=collate, drop_last=drop_last)
+        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False,
+                                collate_fn=collate, drop_last=False)
         return train_loader, val_loader
 
     def _run_epoch(self, loader, time_steps, mode='train'):
@@ -175,9 +177,10 @@ class LargeCorpusTrainer:
         return avg_loss, ppl, mean_firing_rate
 
     def train(self, text, epochs=20, seq_len=128, batch_size=32, time_steps=20,
-              save_path=None, verbose=True):
+              save_path=None, verbose=True, drop_last=False):
         """Train and validate, returning history dictionary."""
-        train_loader, val_loader = self._make_loaders(text, seq_len=seq_len, batch_size=batch_size)
+        train_loader, val_loader = self._make_loaders(text, seq_len=seq_len, batch_size=batch_size,
+                                                      drop_last=drop_last)
 
         for epoch in range(epochs):
             train_loss, train_ppl, train_rate = self._run_epoch(train_loader, time_steps, mode='train')

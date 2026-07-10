@@ -130,7 +130,8 @@ def fair_compare(text, tokenizer, snn_model, transformer_model, epochs=20, seq_l
                                      penalty_weight=penalty_weight)
     snn_path = f'{save_dir}/snn_best.pt' if save_dir else None
     snn_history = snn_trainer.train(text, epochs=epochs, seq_len=seq_len, batch_size=batch_size,
-                                    time_steps=time_steps, save_path=snn_path)
+                                    time_steps=time_steps, save_path=snn_path,
+                                    drop_last=(parallel_strategy == 'dp'))
 
     # Train Transformer
     transformer_model = transformer_model.to(device)
@@ -154,9 +155,11 @@ def fair_compare(text, tokenizer, snn_model, transformer_model, epochs=20, seq_l
         val_dataset = Subset(full_dataset, list(range(train_size, len(full_dataset))))
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True,
-                              collate_fn=lambda b: collate_fn(b, tokenizer.vocab_size))
+                              collate_fn=lambda b: collate_fn(b, tokenizer.vocab_size),
+                              drop_last=(parallel_strategy == 'dp'))
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False,
-                            collate_fn=lambda b: collate_fn(b, tokenizer.vocab_size))
+                            collate_fn=lambda b: collate_fn(b, tokenizer.vocab_size),
+                            drop_last=False)
 
     transformer_history = {'train_loss': [], 'val_loss': [], 'train_ppl': [], 'val_ppl': []}
     best_val_loss = float('inf')

@@ -79,11 +79,25 @@ class LargeScaleSNNLM(nn.Module):
 
         return embedded
 
+    def _reset_lif_states(self):
+        """Reset internal snntorch LIF membrane states.
+
+        snntorch LIF neurons cache ``self.mem`` as an instance attribute. When
+        the model is used with DataParallel, each replica inherits the cached
+        shape from a previous forward, which can cause size mismatches across
+        different batch splits. Resetting forces the neuron to reinitialize
+        ``self.mem`` from the current input shape.
+        """
+        for module in self.modules():
+            if hasattr(module, 'mem') and module.mem is not None:
+                module.mem = None
+
     def forward(self, x, return_spikes=False):
         """Forward pass.
 
         Returns (batch, seq_len, vocab_size) logits, optionally with spikes.
         """
+        self._reset_lif_states()
         embedded = self._prepare_input(x)
         time_steps, batch_size, seq_len, _ = embedded.shape
 
