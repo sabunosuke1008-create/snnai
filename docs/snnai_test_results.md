@@ -619,3 +619,72 @@ python -m pytest tests/ --ignore=tests/test_environment.py -q
 | 29 | ERROR | v6.4.3 notebook が Tensor `data` を `trainer.train()` に渡し `AttributeError` |
 | 30 | ERROR/QUEUED | v6.4.4/v6.4.5：旧 kernel slug で queue 混雑 + BPE 学習が遅くタイムアウト |
 | v6.4.6 v1 | COMPLETE | 新 kernel slug `gihuhi/snnai-v6-4-6` + 反転インデックス BPE。正常完了 |
+
+## 17. Kaggle 大規模学習実行結果（version 1 — v6.5.6 シンプル単一 GPU 実行）
+
+**Version 1** は v6.5 ロードマップ（`nn.Embedding` + 系列軸リカレント + 位置エンコーディング）の検証実行です。v6.5.0〜v6.5.3 の DataParallel および v6.5.4〜v6.5.5 の DDP が Kaggle ノートブック環境で機能しなかったため、**単一 GPU インライントレーニングループ**に回帰し、高速フィードバックを得るためにエポック数を 3 に減らして実行しました。
+
+- **Status**: `COMPLETE`
+- **Kernel**: `gihuhi/snnai-v6-5-6`
+- **URL**: https://www.kaggle.com/code/gihuhi/snnai-v6-5-6
+- **Version**: 1
+- **Clone tag**: `v6.5.6`
+- **使用デバイス**: `cuda`（T4）
+- **SNN 設定**: `embed_dim=128, hidden_dim=512, num_layers=3, seq_len=128, batch_size=32, time_steps=20, epochs=3, dropout=0.2, output_mode='mem_last', use_sequence_recurrent=True, use_positional_encoding=True`
+- **SNN parameters**: 2,019,072
+- **実行時間目安**: 約 90 秒前後（GPU）
+
+### 実行サマリー
+
+| 項目 | 値 |
+|---|---|
+| Corpus length | 1,115,394（Tiny Shakespeare のみ；WikiText-2 は `PosixPath` + `str` 連結バグでダウンロード失敗） |
+| BPE vocab size | 2,048 |
+| Device | cuda |
+| SNN epoch 0 train loss / ppl | 7.1757 / 1307.31 |
+| SNN epoch 2 train loss / ppl | 6.8609 / 954.22 |
+| SNN epoch 2 val loss / ppl | 6.7692 / 868.97 |
+| Transformer epoch 0 train loss / ppl | 7.0338 / 1134.33 |
+| Transformer epoch 2 train loss / ppl | 6.0657 / 430.84 |
+| Transformer epoch 2 val loss / ppl | 5.9734 / 394.88 |
+| SNN latency | 0.0427 s |
+| Transformer latency | 0.00178 s |
+| Transformer parameters | 4,209,664 |
+| SNN energy | joules 1.107e-3, latency 0.0457 s, total_spikes 1,106,977, spikes_per_step 55,348.85 |
+| 量子化 scale sample | embed.weight / layers.0.weight の min/max/scale 取得確認 |
+| 枝刈り sparsity | 0.1055（212,979 / 2,019,072 パラメータ） |
+| 保存ファイル | `v6_5_6_history.json`, `v6_5_6_models.pt` |
+
+### 生成品質
+
+| 項目 | SNN | Transformer |
+|---|---|---|
+| Sampling (t=0.8, top-k=10, top-p=0.9, repetition_penalty=1.5, window=16, 150 chars) | `ROMEO:llatotedghrethouy:thereman,inbehisfatherisawaystatiwouldcaundiinhecannotes;datto;hereitymisedtsandsiso,uponanap:spwwhatibewithsicinius:haveibywh` | `JULIET:dateniheswasnometheholythrwhoseshalleatsheand?e,;ofsihaveandfirstt:myforthatbuttomanywith.tmethoushturs,ihavet.doourbenvolio:t,suchtouiv:thatwh` |
+| 生成特徴 | 非改行文字（`:`, `;`, `,` など）が混じるが、英単語としての可読性は低い | 同様に記号/文字列の羅列が主体 |
+
+### 主な改善点・観察
+
+- ✅ **v6.5 新機能が動作** — `nn.Embedding` + 系列軸リカレント + 位置エンコーディングを持つ `LargeScaleSNNLM` が Kaggle T4 上で正常に学習・推論を完了。
+- ✅ **単一 GPU 実行で安定** — DataParallel や DDP を使わないインラインループにより、snntorch LIF の stateful な問題を回避し、正常終了。
+- ✅ **過学習は抑制されている** — 検証損失が 0 に陥らず、SNN/Transformer ともに val ppl が有限値を保つ。
+- ✅ **SNN エネルギー推定が正常動作**（~1.11 mJ, ~1.11M spikes）
+- ⚠️ **SNN の perplexity（869）が Transformer（395）を大きく上回る** — エポック数が 3 と少なく、BPE 予測がまだ不安定。長時間学習が必要。
+- ⚠️ **生成品質はまだ低い** — 改行や記号主体の生成は脱し始めたが、文法的な英語には達していない。
+- ⚠️ **WikiText-2 ダウンロードに失敗** — `download_wikitext2()` の戻り値が `PosixPath` のまま文字列連結され、`unsupported operand type(s) for +: 'PosixPath' and 'str'` エラー。要修正。
+
+### マルチ GPU 調査結果
+
+| バージョン | 戦略 | 結果 | 原因 |
+|---|---|---|---|
+| v6.5.1 | DataParallel | ERROR | snntorch LIF の stateful な内部状態 `mem` が DP レプリカで形状不一致 |
+| v6.5.2 | DataParallel + `reset_lif_states()` 毎 forward | ERROR | 同上、DP レプリカで tensor size 0 vs 512 エラー |
+| v6.5.3 | DataParallel + `reset_lif_states()` + `drop_last=True` | ERROR | 同じく snntorch LIF と DP の非互換性を確認 |
+| v6.5.4 | DDP via `torch.multiprocessing.spawn` + `%run train_ddp.py` | ERROR | Kaggle 環境に `train_ddp.py` が配置されず FileNotFoundError |
+| v6.5.5 | DDP via `%%writefile train_ddp.py` + `subprocess.run` | 実行不能（RUNNING 60+分、出力ゼロ） | `mp.spawn` + NCCL が Kaggle ノートブック内でハング |
+| v6.5.6 | **単一 GPU インラインループ（本実行）** | **COMPLETE** | stateful SNN には単一 GPU が最も安定 |
+
+### 結論
+
+v6.5.6 の時点では、**Kaggle ノートブック環境では単一 GPU 実行が唯一安定して動作する方式**です。DataParallel は snntorch LIF の stateful ニューロンと根本的に非互換、DDP は `mp.spawn`/`NCCL` が Kaggle セッション内で初期化でハングするため、実用的ではありません。今後マルチ GPU を検証する場合は、Kaggle スクリプト（非 notebook）実行環境または別プラットフォームを検討する必要があります。
+
+したがって、**v6.5.6 以降は単一 GPU 方式を採用し、DataParallel 実行は不要です**。
