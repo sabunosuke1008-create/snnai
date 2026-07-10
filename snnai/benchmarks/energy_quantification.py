@@ -4,6 +4,7 @@ import time
 import torch
 
 from snnai.benchmarks.energy_estimation import estimate_energy
+from snnai.benchmarks.parallel_utils import unwrap_model
 
 
 class SpikeCounter:
@@ -59,6 +60,9 @@ def quantize_energy(model, sample_input, time_steps=20, joules_per_spike=1e-9):
     dict
         Detailed energy report.
     """
+    # Energy profiling uses a single device; unwrap any DataParallel/DDP wrapper
+    # so hooks reliably count spikes on the underlying module.
+    model = unwrap_model(model)
     model.eval()
     counter = SpikeCounter()
     counter.attach(model)

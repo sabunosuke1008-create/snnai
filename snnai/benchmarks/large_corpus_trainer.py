@@ -5,6 +5,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader, random_split, Subset
 
 from snnai.benchmarks.homeostatic_loss import HomeostaticRegularizer
+from snnai.benchmarks.parallel_utils import unwrap_model
 
 
 class CharLMDataset(Dataset):
@@ -202,10 +203,14 @@ class LargeCorpusTrainer:
         return self.history
 
     def save_checkpoint(self, path, epoch, val_loss):
-        """Save model checkpoint with metadata."""
+        """Save model checkpoint with metadata.
+
+        Saves the unwrapped state dict so checkpoints remain portable between
+        single-GPU and multi-GPU runs.
+        """
         torch.save({
             'epoch': epoch,
-            'model_state_dict': self.model.state_dict(),
+            'model_state_dict': unwrap_model(self.model).state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'val_loss': val_loss,
             'history': self.history,
@@ -214,7 +219,7 @@ class LargeCorpusTrainer:
     def load_checkpoint(self, path):
         """Load checkpoint."""
         checkpoint = torch.load(path, map_location=self.device, weights_only=True)
-        self.model.load_state_dict(checkpoint['model_state_dict'])
+        unwrap_model(self.model).load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         self.history = checkpoint.get('history', self.history)
         self.best_val_loss = min(self.history.get('val_loss', [float('inf')]))

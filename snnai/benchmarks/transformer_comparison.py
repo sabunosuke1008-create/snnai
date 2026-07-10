@@ -6,6 +6,7 @@ import torch.nn as nn
 
 from snnai.benchmarks.large_corpus_trainer import LargeCorpusTrainer, WarmupCosineSchedule
 from snnai.benchmarks.generation_metrics import evaluate_generation, evaluate_model
+from snnai.benchmarks.parallel_utils import parallelize_model, unwrap_model
 from torch.utils.data import Subset
 
 
@@ -48,8 +49,8 @@ def compare_models(snn_model, transformer_model, sample_input, tokenizer=None):
         _ = transformer_model(transformer_input)
     transformer_latency = time.perf_counter() - start
 
-    snn_params = sum(p.numel() for p in snn_model.parameters())
-    transformer_params = sum(p.numel() for p in transformer_model.parameters())
+    snn_params = sum(p.numel() for p in unwrap_model(snn_model).parameters())
+    transformer_params = sum(p.numel() for p in unwrap_model(transformer_model).parameters())
     return {
         'snn_latency': snn_latency,
         'transformer_latency': transformer_latency,
@@ -65,7 +66,8 @@ def fair_compare(text, tokenizer, snn_model, transformer_model, epochs=20, seq_l
                  gen_do_sample=False, gen_repetition_penalty=1.0,
                  gen_penalty_window=16,
                  gen_generation_bias_tokens=None,
-                 gen_generation_bias_weight=0.0):
+                 gen_generation_bias_weight=0.0,
+                 parallel_strategy='none'):
     """Train both models on the same data and compare metrics fairly.
 
     Parameters
@@ -105,6 +107,8 @@ def fair_compare(text, tokenizer, snn_model, transformer_model, epochs=20, seq_l
         Token ids whose logits are biased during generation.
     gen_generation_bias_weight : float
         Logit bias weight applied to gen_generation_bias_tokens.
+    parallel_strategy : {'none', 'dp', 'ddp'}
+        Multi-GPU strategy for training. 'dp' enables DataParallel in notebooks.
 
     Returns
     -------
@@ -113,6 +117,8 @@ def fair_compare(text, tokenizer, snn_model, transformer_model, epochs=20, seq_l
     """
     # Train SNN
     snn_model = snn_model.to(device)
+    if parallel_strategy == 'dp' and torch.cuda.device_count() > 1:
+        snn_model = parallelize_model(snn_model, strategy='dp', dim=1)
     snn_opt = torch.optim.Adam(snn_model.parameters(), lr=lr)
     total_steps = epochs * max(1, len(text) // (batch_size * seq_len))
     snn_scheduler = WarmupCosineSchedule(snn_opt, warmup_steps=max(1, total_steps // 10),
@@ -128,6 +134,8 @@ def fair_compare(text, tokenizer, snn_model, transformer_model, epochs=20, seq_l
 
     # Train Transformer
     transformer_model = transformer_model.to(device)
+    if parallel_strategy == 'dp' and torch.cuda.device_count() > 1:
+        transformer_model = parallelize_model(transformer_model, strategy='dp', dim=0)
     transformer_opt = torch.optim.Adam(transformer_model.parameters(), lr=lr)
     transformer_scheduler = WarmupCosineSchedule(transformer_opt, warmup_steps=max(1, total_steps // 10),
                                                  total_steps=max(1, total_steps), base_lr=lr, min_lr=1e-5)
@@ -195,7 +203,7 @@ def fair_compare(text, tokenizer, snn_model, transformer_model, epochs=20, seq_l
         if transformer_path and val_loss < best_val_loss:
             best_val_loss = val_loss
             torch.save({
-                'model_state_dict': transformer_model.state_dict(),
+                'model_state_dict': unwrap_model(transformer_model).state_dict(),
                 'history': transformer_history,
             }, transformer_path)
 
