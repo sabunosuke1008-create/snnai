@@ -2,7 +2,7 @@
 
 Spiking Neural Network based AI — 線虫・ミツバチ・カラス・タコなど複数の生物の脳構造を参考にした、省電力・モジュラー型 SNN の研究プロジェクト。
 
-## バージョン v6.5.1（SNN LM の系列依存性 + マルチGPU DataParallel / DDP 対応）
+## バージョン v6.5.2（SNN LM の系列依存性 + マルチGPU DataParallel / DDP 対応）
 
 SNNAI v6.3.0 では [docs/roadmap_v63.md](docs/roadmap_v63.md) に基づき、v6.2.0 で残った「生成テキストが改行・スペースに退化する」問題と「Kaggle での WikiText-2 解凍エラー」に取り組みます。
 

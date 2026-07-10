@@ -44,3 +44,6 @@ kimchi-session-*.html
 # Downloaded datasets
 data/
 
+
+# Kaggle output downloads
+kaggle_output*/
