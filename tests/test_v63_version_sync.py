@@ -16,8 +16,8 @@ def test_kernel_metadata_title_contains_version():
     metadata_path = Path(__file__).resolve().parents[1] / "environment" / "kaggle_large_scale" / "kernel-metadata.json"
     assert metadata_path.exists()
     data = json.loads(metadata_path.read_text(encoding="utf-8"))
-    assert any(v in data["title"] for v in ["v6-4-0", "v6.4.0", "v6-4-1", "v6.4.1", "v6-4-2", "v6.4.2", "v6-4-3", "v6.4.3", "v6-4-4", "v6.4.4", "v6-4-5", "v6.4.5", "v6-4-6", "v6.4.6", "v6-5-0", "v6.5.0", "v6-5-1", "v6.5.1", "v6-5-2", "v6.5.2", "v6-5-3", "v6.5.3", "v6-5-4", "v6.5.4", "v6-5-5", "v6.5.5"])
+    assert any(v in data["title"] for v in ["v6-4-0", "v6.4.0", "v6-4-1", "v6.4.1", "v6-4-2", "v6.4.2", "v6-4-3", "v6.4.3", "v6-4-4", "v6.4.4", "v6-4-5", "v6.4.5", "v6-4-6", "v6.4.6", "v6-5-0", "v6.5.0", "v6-5-1", "v6.5.1", "v6-5-2", "v6.5.2", "v6-5-3", "v6.5.3", "v6-5-4", "v6.5.4", "v6-5-5", "v6.5.5", "v6-5-6", "v6.5.6"])
 
 
 def test_version_is_release():
-    assert snnai.__version__ == "v6.5.5"
+    assert snnai.__version__ == "v6.5.6"
