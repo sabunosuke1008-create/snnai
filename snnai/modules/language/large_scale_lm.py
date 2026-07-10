@@ -14,15 +14,26 @@ class LargeScaleSNNLM(nn.Module):
 
     def __init__(self, vocab_size, embed_dim=512, hidden_dim=2048, num_layers=6,
                  dropout=0.1, beta=0.9, threshold=1.0, learn_threshold=False,
-                 output_mode='mem_mean'):
+                 output_mode='mem_mean', use_sequence_recurrent=True,
+                 use_positional_encoding=True, max_seq_len=2048):
         super().__init__()
         self.vocab_size = vocab_size
         self.embed_dim = embed_dim
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
         self.output_mode = output_mode
+        self.use_sequence_recurrent = use_sequence_recurrent
+        self.use_positional_encoding = use_positional_encoding
+        self.max_seq_len = max_seq_len
 
-        self.embed = nn.Linear(vocab_size, embed_dim, bias=False)
+        self.embed = nn.Embedding(vocab_size, embed_dim)
+        if use_positional_encoding:
+            self.pos_embed = nn.Embedding(max_seq_len, embed_dim)
+        if use_sequence_recurrent:
+            self.seq_recurrent = nn.GRU(
+                embed_dim, embed_dim, batch_first=True
+            )
+
         layers = []
         for i in range(num_layers):
             in_dim = embed_dim if i == 0 else hidden_dim
@@ -38,29 +49,54 @@ class LargeScaleSNNLM(nn.Module):
                                  learn_threshold=learn_threshold,
                                  spike_grad=surrogate.fast_sigmoid())
 
+    def _prepare_input(self, x):
+        """Convert input to token embeddings.
+
+        Supports both one-hot (T,B,L,V) and index (T,B,L) or (B,L) inputs.
+        """
+        if x.dim() == 4:
+            indices = x.argmax(dim=-1)
+        elif x.dim() == 3:
+            indices = x
+        elif x.dim() == 2:
+            indices = x.unsqueeze(0)
+        else:
+            raise ValueError(
+                f"Expected input of shape (T,B,L,V), (T,B,L) or (B,L), got {x.shape}"
+            )
+
+        time_steps, batch_size, seq_len = indices.shape
+        flat = indices.view(-1)
+        embedded = self.embed(flat).view(time_steps, batch_size, seq_len, self.embed_dim)
+
+        if self.use_positional_encoding:
+            if seq_len > self.max_seq_len:
+                raise ValueError(
+                    f"Sequence length {seq_len} exceeds max_seq_len {self.max_seq_len}"
+                )
+            pos = torch.arange(seq_len, device=embedded.device)
+            embedded = embedded + self.pos_embed(pos).unsqueeze(0).unsqueeze(0)
+
+        return embedded
+
     def forward(self, x, return_spikes=False):
         """Forward pass.
 
-        Parameters
-        ----------
-        x : torch.Tensor
-            (time_steps, batch, seq_len, vocab_size).
-        return_spikes : bool
-            If True, also return a list of hidden-layer spike tensors for
-            homeostatic regularization.
-
-        Returns
-        -------
-        torch.Tensor or tuple
-            (batch, seq_len, vocab_size) logits, optionally with a list of
-            spike tensors of shape (time_steps, batch, seq_len, hidden).
+        Returns (batch, seq_len, vocab_size) logits, optionally with spikes.
         """
-        time_steps, batch_size, seq_len, _ = x.shape
+        embedded = self._prepare_input(x)
+        time_steps, batch_size, seq_len, _ = embedded.shape
+
+        if self.use_sequence_recurrent:
+            flat = embedded.view(time_steps * batch_size, seq_len, self.embed_dim)
+            recurrent_out, _ = self.seq_recurrent(flat)
+            embedded = recurrent_out.view(time_steps, batch_size, seq_len, self.embed_dim)
+
         mems = [None] * self.num_layers
         out_mems = []
         all_spikes = [[] for _ in range(self.num_layers)] if return_spikes else None
         for t in range(time_steps):
-            cur = self.embed(x[t])
+            cur = embedded[t]
             for i in range(self.num_layers):
                 lin = self.layers[i * 4]
                 ln = self.layers[i * 4 + 1]
@@ -84,11 +120,10 @@ class LargeScaleSNNLM(nn.Module):
             out_mems.append(mem_out)
 
         if self.output_mode == 'spike_sum':
-            # Legacy mode: sum output spikes over time.
             out_spikes = []
             mem_out = torch.zeros(batch_size, seq_len, self.vocab_size, device=cur.device)
             for t in range(time_steps):
-                out_cur = self.fc_out(self.embed(x[t]))
+                out_cur = self.fc_out(embedded[t])
                 spk_out, mem_out = self.lif_out(out_cur, mem_out)
                 out_spikes.append(spk_out)
             logits = torch.stack(out_spikes, dim=0).sum(dim=0)
@@ -98,7 +133,6 @@ class LargeScaleSNNLM(nn.Module):
             logits = torch.stack(out_mems, dim=0).mean(dim=0)
 
         if return_spikes:
-            # Stack time dimension for each layer.
             spikes_list = [torch.stack(layer_spikes, dim=0) for layer_spikes in all_spikes]
             return logits, spikes_list
         return logits
