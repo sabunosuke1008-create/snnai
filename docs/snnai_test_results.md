@@ -688,3 +688,61 @@ python -m pytest tests/ --ignore=tests/test_environment.py -q
 v6.5.6 の時点では、**Kaggle ノートブック環境では単一 GPU 実行が唯一安定して動作する方式**です。DataParallel は snntorch LIF の stateful ニューロンと根本的に非互換、DDP は `mp.spawn`/`NCCL` が Kaggle セッション内で初期化でハングするため、実用的ではありません。今後マルチ GPU を検証する場合は、Kaggle スクリプト（非 notebook）実行環境または別プラットフォームを検討する必要があります。
 
 したがって、**v6.5.6 以降は単一 GPU 方式を採用し、DataParallel 実行は不要です**。
+
+## 18. Kaggle 大規模学習実行結果（version 1 — v6.5.7 WikiText-2 統合 + 5 エポック）
+
+**Version 1** は v6.5.7 リリースに向けた **WikiText-2 ダウンロード修正 + エポック数増加** の検証実行です。`acc="NvidiaTeslaT4"` で T4 GPU が割り当てられ、全セルがエラーなく完了しました。
+
+- **Status**: `COMPLETE`
+- **Kernel**: `gihuhi/snnai-v6-5-7`
+- **URL**: https://www.kaggle.com/code/gihuhi/snnai-v6-5-7
+- **Version**: 1
+- **Clone tag**: `v6.5.7`
+- **使用デバイス**: `cuda`（T4）
+- **SNN 設定**: `embed_dim=128, hidden_dim=512, num_layers=3, seq_len=128, batch_size=32, time_steps=20, epochs=5, dropout=0.2, output_mode='mem_last', use_sequence_recurrent=True, use_positional_encoding=True`
+- **SNN parameters**: 2,019,072
+- **実行時間目安**: 約 10〜15 分（GPU、WikiText-2 込み）
+
+### 実行サマリー
+
+| 項目 | 値 |
+|---|---|
+| Corpus length | 14,467,591（Tiny Shakespeare + WikiText-2 統合） |
+| BPE vocab size | 2,048 |
+| Device | cuda |
+| SNN epoch 0 train loss / ppl | 6.2588 / 522.57 |
+| SNN epoch 4 train loss / ppl | 4.7864 / 119.87 |
+| SNN epoch 4 val loss / ppl | 68.74 |
+| Transformer epoch 0 train loss / ppl | 5.4423 / 230.98 |
+| Transformer epoch 4 train loss / ppl | 4.0879 / 59.62 |
+| Transformer epoch 4 val loss / ppl | 33.04 |
+| SNN latency | 0.0447 s |
+| Transformer latency | 0.00188 s |
+| Transformer parameters | 4,209,664 |
+| SNN energy | joules 1.014e-3, latency 0.0460 s, total_spikes 1,014,334, spikes_per_step 50,716.7 |
+| 量子化 scale sample | embed.weight / layers.0.weight の min/max/scale 取得確認 |
+| 枝刈り sparsity | 0.1055（212,979 / 2,019,072 パラメータ） |
+| 保存ファイル | `v6_5_7_history.json`, `v6_5_7_models.pt` |
+
+### 主な改善点・観察
+
+- ✅ **WikiText-2 ダウンロードに成功** — `download_wikitext2()` の PosixPath + str バグを修正し、Kaggle 上で 14M トークンのコーパスを構築。`Final corpus length: 14467591`。
+- ✅ **v6.5 新機能（Embedding + 系列軸リカレント + 位置エンコーディング）が WikiText-2 大規模コーパスで正常動作** — SNN と Transformer ともに ppl が有限値で収束。
+- ✅ **過学習が抑制されている** — 検証損失が 0 に陥らず、SNN/Transformer ともに val ppl が改善。
+- ✅ **生成品質が大幅に向上** — サンプリング生成に `contra`, `pro`, `government`, `league`, `publi` などの実英語サブワードが出現。記号の羅列から意味のある語彙レベルに到達。
+- ✅ **SNN エネルギー推定が正常動作**（~1.01 mJ, ~1.01M spikes）
+- ⚠️ SNN val_ppl（68.74）は Transformer val_ppl（33.04）の 2 倍程度 — BPE 予測の差は依然として残る。
+
+### 履歴（v6.5 以降）
+
+| Version | 結果 | 主な対応 |
+|---|---|---|
+| v6.5.0 | USER-STOPPED | 単一 GPU ランが ~9h と長時間のためユーザー中断 |
+| v6.5.1 | ERROR | notebook JSON `SyntaxError`（import 行連結） |
+| v6.5.2 | ERROR | DataParallel + snntorch LIF で `tensor size 0 vs 512` |
+| v6.5.3 | ERROR | 同上（reset_lif_states + drop_last でも解消せず） |
+| v6.5.4 | ERROR | `%run train_ddp.py` で `FileNotFoundError` |
+| v6.5.5 | ERROR | DDP `mp.spawn` が NCCL 初期化でハング（60+ 分） |
+| v6.5.6 v1 | COMPLETE | 単一 GPU インラインループ + 3 epochs。PosixPath+str バグのため WikiText-2 未使用 |
+| v6.5.7 v1 | COMPLETE | PosixPath バグ修正 + 5 epochs。WikiText-2 統合で ppl 大幅改善 |
+
