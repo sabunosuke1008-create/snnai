@@ -59,11 +59,21 @@ def make_surrogate_graph(arch, feature_dim=4, hidden_dim=4, output_dim=4, seed=0
             preds = [src for src, dst in arch.edges if dst == node]
             if not preds:
                 continue
-            combined = sum(cache[p] for p in preds)
+            # Phase 6.16: a node can be listed as a predecessor before it has
+            # been evaluated (e.g. a source-less node that the topological
+            # order skipped). Guard against missing cache entries instead of
+            # crashing with a non-deterministic KeyError.
+            inputs = [cache[p] for p in preds if p in cache]
+            if not inputs:
+                continue
+            combined = sum(inputs)
             if node == "output":
                 cache[node] = combined
             else:
                 cache[node] = modules[node](combined)
+        if "output" not in cache:
+            # Fallback: the graph produced no usable output path.
+            cache["output"] = cache["input"]
         return cache["output"]
 
     return forward

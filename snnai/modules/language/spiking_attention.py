@@ -70,7 +70,8 @@ class SpikingSelfAttention(nn.Module):
     """Softmax-free spiking self-attention over the sequence axis."""
 
     def __init__(self, hidden_dim, num_heads=1, dropout=0.0, causal=True,
-                 use_spike=True, threshold=1.0, learn_threshold=False, slope=25.0):
+                 use_spike=True, threshold=1.0, learn_threshold=False, slope=25.0,
+                 score_scale=None, enable_residual=True, enable_layernorm=True):
         super().__init__()
         if hidden_dim % num_heads != 0:
             raise ValueError("hidden_dim must be divisible by num_heads")
@@ -79,12 +80,21 @@ class SpikingSelfAttention(nn.Module):
         self.head_dim = hidden_dim // num_heads
         self.causal = causal
         self.use_spike = use_spike
+        # Phase 6.13: score scaling stabilises large attention logits. When
+        # ``None`` fall back to 1/sqrt(head_dim) which is standard for
+        # softmax attention but can saturate the spike surrogate, so a
+        # slightly larger floor (e.g. 0.5) is recommended for spiking use.
+        self.score_scale = score_scale if score_scale is not None else 1.0 / math.sqrt(self.head_dim)
+        self.enable_residual = enable_residual
+        self.enable_layernorm = enable_layernorm
 
         self.q_proj = nn.Linear(hidden_dim, hidden_dim, bias=False)
         self.k_proj = nn.Linear(hidden_dim, hidden_dim, bias=False)
         self.v_proj = nn.Linear(hidden_dim, hidden_dim, bias=False)
         self.out_proj = nn.Linear(hidden_dim, hidden_dim, bias=False)
         self.drop = nn.Dropout(dropout)
+        if enable_layernorm:
+            self.out_norm = nn.LayerNorm(hidden_dim)
         if use_spike:
             self.spike = _SpikeActivation(
                 threshold=threshold, learn_threshold=learn_threshold, slope=slope
@@ -96,17 +106,28 @@ class SpikingSelfAttention(nn.Module):
 
     @staticmethod
     def _normalize(scores, mask):
-        """Mask-aware per-row (key-axis) normalization to zero-mean/unit-var."""
+        """Mask-aware per-row (key-axis) normalization to zero-mean/unit-var.
+
+        Phase 6.10: the variance floor uses ``(var + eps).sqrt()`` rather than
+        ``var.sqrt().clamp_min(eps)``. The latter produced a ``0 * Inf`` NaN in
+        the backward pass whenever a score row had exactly zero variance (the
+        sqrt gradient is ``inf`` while the clamp gradient is ``0``), which is
+        precisely what destabilised the all-features SNN and pushed its loss to
+        NaN. Adding ``eps`` inside the sqrt keeps the gradient finite.
+        """
+        eps = 1e-3
         if mask is not None:
             valid = (~mask).unsqueeze(0).to(scores.dtype)  # (1, L, L)
             s2 = scores.masked_fill(mask, 0.0)
             denom = valid.sum(-1, keepdim=True).clamp_min(1.0)
             mean = (s2 * valid).sum(-1, keepdim=True) / denom
             var = (((s2 - mean) * valid) ** 2).sum(-1, keepdim=True) / denom
-            s2 = (s2 - mean) / var.sqrt().clamp_min(1e-5)
+            std = (var + eps).sqrt()
+            s2 = (s2 - mean) / std
             return s2.masked_fill(mask, -1e9)
         mean = scores.mean(-1, keepdim=True)
-        std = scores.std(-1, keepdim=True).clamp_min(1e-5)
+        var = scores.var(-1, keepdim=True, unbiased=False)
+        std = (var + eps).sqrt()
         return (scores - mean) / std
 
     def _attn_from_scores(self, scores, mask):
@@ -124,8 +145,14 @@ class SpikingSelfAttention(nn.Module):
         Returns ``(B, L, H)``. When ``return_attn`` is True also returns
         the ``(B, L, L)`` (single-head) or ``(B, heads, L, L)``
         attention map.
+
+        Phase 6.13: the output projection is followed by an optional
+        LayerNorm and a residual connection back to the input ``x``. Both
+        stabilise training of the all-features SNN (which previously died
+        with firing_rate ~ 0 and NaN loss) by preserving gradient flow.
         """
         B, L, H = x.shape
+        x_in = x
         q = self.q_proj(x)
         k = self.k_proj(x)
         v = self.v_proj(x)
@@ -137,12 +164,13 @@ class SpikingSelfAttention(nn.Module):
         else:
             mask = None
 
+        scale = self.score_scale
         if self.num_heads > 1:
             q = q.view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
             k = k.view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
             v = v.view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
             # (B, heads, L, head_dim)
-            scores = torch.matmul(q, k.transpose(-1, -2)) / math.sqrt(self.head_dim)
+            scores = torch.matmul(q, k.transpose(-1, -2)) * scale
             Bh = B * self.num_heads
             scores = scores.reshape(Bh, L, L)
             attn = self._attn_from_scores(scores, mask)  # (Bh, L, L)
@@ -150,12 +178,16 @@ class SpikingSelfAttention(nn.Module):
             out = torch.matmul(attn, v)  # (B, heads, L, head_dim)
             out = out.transpose(1, 2).reshape(B, L, H)
         else:
-            scores = torch.matmul(q, k.transpose(-1, -2)) / math.sqrt(self.head_dim)
+            scores = torch.matmul(q, k.transpose(-1, -2)) * scale
             attn = self._attn_from_scores(scores, mask)  # (B, L, L)
             out = torch.matmul(attn, v)
 
         out = self.drop(out)
         out = self.out_proj(out)
+        if self.enable_layernorm:
+            out = self.out_norm(out)
+        if self.enable_residual:
+            out = out + x_in
         if return_attn:
             return out, attn
         return out

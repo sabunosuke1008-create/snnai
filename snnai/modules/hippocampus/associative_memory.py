@@ -28,6 +28,11 @@ class HippocampalMemory(nn.Module):
     def store(self, key, value):
         """Store a key-value episode.
 
+        When the buffer is full the oldest episodes are evicted (FIFO) so
+        that retrieval always reflects recent context instead of silently
+        dropping new episodes (the previous behaviour, which let stale
+        gradients and capacity saturation accumulate).
+
         Parameters
         ----------
         key : torch.Tensor
@@ -38,14 +43,38 @@ class HippocampalMemory(nn.Module):
         if key.dim() == 1:
             key = key.unsqueeze(0)
             value = value.unsqueeze(0)
-        n = min(key.size(0), self.capacity - self.count.item())
+        n = key.size(0)
         if n <= 0:
             return
-        start = self.count.item()
-        end = start + n
-        self.keys[start:end] = key[:n]
-        self.values[start:end] = value[:n]
-        self.count += n
+        if n >= self.capacity:
+            # Keep only the most recent `capacity` episodes.
+            self.keys[:] = key[-self.capacity:]
+            self.values[:] = value[-self.capacity:]
+            self.count.fill_(self.capacity)
+            return
+        if self.count.item() + n <= self.capacity:
+            start = self.count.item()
+            end = start + n
+            self.keys[start:end] = key[:n]
+            self.values[start:end] = value[:n]
+            self.count += n
+        else:
+            # FIFO eviction: shift out the oldest `overflow` episodes, then
+            # append the new ones at the tail. Use clones to avoid an
+            # overlapping in-place copy on the same underlying storage.
+            overflow = self.count.item() + n - self.capacity
+            kept = self.capacity - overflow
+            self.keys[:kept] = self.keys[overflow:self.count.item()].clone()
+            self.values[:kept] = self.values[overflow:self.count.item()].clone()
+            self.keys[kept:self.capacity] = key[:n]
+            self.values[kept:self.capacity] = value[:n]
+            self.count.fill_(self.capacity)
+
+    def reset(self):
+        """Clear all stored episodes (Phase 6.11 memory reset hook)."""
+        self.keys.zero_()
+        self.values.zero_()
+        self.count.zero_()
 
     def retrieve(self, query, top_k=1):
         """Retrieve values most similar to the query.

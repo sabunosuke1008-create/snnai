@@ -119,6 +119,11 @@ class LargeCorpusTrainer:
         return train_loader, val_loader
 
     def _run_epoch(self, loader, time_steps, mode='train'):
+        # Phase 6.11: clear episodic memory at the start of every epoch so that
+        # training episodes never leak into validation and never accumulate
+        # across epochs (a prime suspect for the all-features NaN/Inf).
+        if hasattr(self.model, 'reset_memory'):
+            self.model.reset_memory()
         if mode == 'train':
             self.model.train()
         else:

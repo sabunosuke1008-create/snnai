@@ -168,6 +168,80 @@ def _make_dummy_corpus(seq_len, vocab_size, n_samples=400):
     return inputs, targets
 
 
+def evaluate_lm_architecture_real(
+    arch,
+    vocab_size=256,
+    embed_dim=32,
+    hidden_dim=64,
+    seq_len=32,
+    epochs=2,
+    device="cpu",
+    seed=42,
+    time_steps=10,
+    batch_size=32,
+):
+    """Phase 6.14: evaluate an LM architecture with a *real* (tiny) SNN LM.
+
+    The standard ``evaluate_lm_architecture`` uses fixed random-projection
+    surrogate modules and never trains a real spiking network. This function
+    instead builds a real ``LargeScaleSNNLM`` that mirrors the architecture's
+    layer types (attention -> spiking self-attention, hippocampus_gate ->
+    hippocampal memory, recurrent -> sequence-recurrent) and trains it for a
+    few steps on a synthetic corpus, returning the true validation perplexity.
+
+    The run is intentionally tiny so it can be used inside a search loop, but
+    the number of epochs / dimensions can be raised for a more meaningful
+    estimate.
+    """
+    from snnai.modules.language.large_scale_lm import LargeScaleSNNLM
+
+    layer_types = arch.count_lm_layer_types()
+    use_sa = "attention" in layer_types
+    use_hg = "hippocampus_gate" in layer_types
+    use_rec = "recurrent" in layer_types
+
+    torch.manual_seed(seed)
+    model = LargeScaleSNNLM(
+        vocab_size,
+        embed_dim=embed_dim,
+        hidden_dim=hidden_dim,
+        num_layers=1,
+        use_spiking_attention=use_sa,
+        use_hippocampus_gate=use_hg,
+        use_sequence_recurrent=use_rec,
+        num_heads=1,
+    ).to(device)
+    opt = torch.optim.Adam(model.parameters(), lr=1e-3)
+
+    inputs, targets = _make_dummy_corpus(seq_len, vocab_size, n_samples=400)
+    inputs, targets = inputs.to(device), targets.to(device)
+    split = int(len(inputs) * 0.8)
+    train_x, val_x = inputs[:split], inputs[split:]
+    train_y, val_y = targets[:split], targets[split:]
+
+    for _ in range(epochs):
+        model.train()
+        for i in range(0, len(train_x), batch_size):
+            bx = train_x[i:i + batch_size]
+            by = train_y[i:i + batch_size]
+            opt.zero_grad()
+            x = bx.unsqueeze(0).repeat(time_steps, 1, 1)
+            out, _ = model(x, return_spikes=True)
+            loss = F.cross_entropy(out.reshape(-1, vocab_size), by.reshape(-1))
+            loss.backward()
+            opt.step()
+
+    model.eval()
+    with torch.no_grad():
+        if hasattr(model, "reset_memory"):
+            model.reset_memory()
+        x = val_x.unsqueeze(0).repeat(time_steps, 1, 1)
+        out, _ = model(x, return_spikes=True)
+        val_loss = F.cross_entropy(out.reshape(-1, vocab_size), val_y.reshape(-1)).item()
+    val_ppl = math.exp(min(20.0, val_loss))
+    return {"val_ppl": val_ppl, "real_eval": True}
+
+
 def evaluate_lm_architecture(
     arch,
     vocab_size=256,
@@ -177,6 +251,10 @@ def evaluate_lm_architecture(
     epochs=3,
     device="cpu",
     seed=42,
+    use_real_eval=False,
+    real_epochs=2,
+    real_hidden_dim=64,
+    real_num_layers=1,
 ):
     """Train a proxy LM and return a metrics dict.
 
@@ -194,6 +272,23 @@ def evaluate_lm_architecture(
             "biological_penalty": float("inf"),
             "composite_score": -float("inf"),
             "layer_type_count": 0,
+        }
+
+    if use_real_eval:
+        real = evaluate_lm_architecture_real(
+            arch, vocab_size=vocab_size, embed_dim=embed_dim,
+            hidden_dim=real_hidden_dim, seq_len=seq_len, epochs=real_epochs,
+            device=device, seed=seed,
+        )
+        return {
+            "val_ppl": real["val_ppl"],
+            "latency_sec": float("nan"),
+            "energy_proxy_joules": float("nan"),
+            "bleu1": 0.0,
+            "biological_penalty": float("nan"),
+            "composite_score": -float(real["val_ppl"]),
+            "layer_type_count": len(arch.count_lm_layer_types()),
+            "real_eval": True,
         }
 
     torch.manual_seed(seed)

@@ -335,3 +335,55 @@
 - Gonzalez et al., "SAPU-LM", Zenodo 2026.
 - "NeuronSpark", arXiv 2026.
 - 既存: `docs/roadmap_v65.md`（Phase 6.5〜7.0）、`docs/snnai_test_results.md`（§18/§21/§22）。
+
+---
+
+## 10. 実装ログ（v6.7.0）
+
+全フェーズ 6.10〜6.16 を実装済み。検証はローカル（pytest + 5 パターン・スモーク）で完了、Kaggle 軽量→本番の 2 段実行を予定。
+
+### 10.1 最重要発見：all-features が学習不能だった根本原因
+
+§22 の「all-features は Epoch 0 から `train_loss=nan`、firing_rate≈0.0002（死 SNN）」の真因は **`SpikingSelfAttention._normalize` の逆伝播における `0 × Inf`（0*inf）NaN** だった。
+
+- 旧実装: `var.sqrt().clamp_min(eps)`。各行の分散 `var` が **ちょうど 0**（スコアが一定）のとき `sqrt` の勾配は `inf`、その上の `clamp_min` の勾配は `0` となり、`inf × 0 = NaN` が発生。この NaN 勾配が Embedding まで伝播し、1 ステップ目で重みが崩壊→以降 loss=nan。
+- 修正: `(var + eps).sqrt()` に変更（`spiking_attention.py`）。勾配が常に有限になり、**all-features が初めて学習可能になった**。
+
+この修正単体で P4（+attention）と P5（all-features）の `val_ppl` が有限値（スモーク: 45.4 / 44.2）に。これまでの「normalize の clamp 緩和（1e-5→1e-3）」や「残差／レイヤ正規化／ssa_input='membrane'」は補助に過ぎず、根本はこの逆伝播 NaN だった。
+
+### 10.2 変更ファイル
+
+| ファイル | フェーズ | 変更 |
+|---|---|---|
+| `snnai/modules/language/spiking_attention.py` | 6.10/6.13 | `_normalize`: `(var+eps).sqrt()` に修正（NaN 根因）。`score_scale`、`enable_residual`、`enable_layernorm` 追加。残差＋出力 LayNorm。 |
+| `snnai/modules/language/large_scale_lm.py` | 6.10/6.11/6.13 | `ssa_input`、`ssa_score_scale`、`enable_ssa_*` 追加。`reset_memory()` フック追加（Hippocampus リセット）。`ssa_input='membrane'` 対応。 |
+| `snnai/modules/hippocampus/associative_memory.py` | 6.11 | 容量超過時に FIFO 上書き（旧: 静かに棄却）。`reset()` 追加。自己重複コピーを clone で回避。 |
+| `snnai/benchmarks/large_corpus_trainer.py` | 6.11 | `_run_epoch` 冒頭で `model.reset_memory()` を呼び、train→val 漏洩とエポック間蓄積を防止。 |
+| `snnai/benchmarks/distillation.py` | 6.12 | **新規**: `run_distillation()` — Transformer 教師のソフトターゲットに対する温度付き KL 蒸留。 |
+| `snnai/benchmarks/transformer_comparison.py` | 6.10/6.12/6.15 | `seeds` ループ（mean±std 集計）、`match_transformer` + `build_matched_transformer()`（SNN と同パラム数の TF を自動構築）、`use_distill` フック、`verbose`。 |
+| `snnai/bio_nas/evaluator.py` | 6.16 | `make_surrogate_graph` の `KeyError` を `p in cache` ガードで修正（ソースレス中間ノードへの非決定論的参照）。 |
+| `snnai/bio_nas/lm_evaluator.py` | 6.14 | `evaluate_lm_architecture_real()` を追加（実 `LargeScaleSNNLM` で数エポック短学習→真の `val_ppl`）。`evaluate_lm_architecture(use_real_eval=True)` で切替。 |
+| `tests/test_v71_roadmap_6_10_6_16.py` | 全 | 新規回帰テスト（含: normalize 逆伝播有限性）。 |
+
+### 10.3 ローカル検証結果（5 パターン・スモーク）
+
+設定: vocab=50, embed=64, hidden=64, layers=1, seq=48, batch=16, time_steps=6, epochs=2, 1 seed, `match_transformer=True`。
+
+| パターン | snn_val_ppl | tf_val_ppl | firing_rate | snn_params | tf_params |
+|---|---|---|---|---|---|
+| P1 baseline | 35.64 | 42.45 | 0.266 | 35,584 | 28,658 |
+| P2 +posenc | 44.25 | 37.24 | 0.269 | 51,968 | 43,490 |
+| P3 +hippocampus | 42.24 | 31.78 | 0.267 | 60,224 | 47,678 |
+| P4 +attention | 45.39 | 35.30 | 0.268 | 68,480 | 56,630 |
+| P5 all-features | 44.20 | 34.83 | 0.268 | 76,736 | 61,394 |
+
+全パターンで `val_ppl` 有限・firing_rate≈0.27（死ニューロンなし）。all-features が初めて正常学習。
+
+### 10.4 Kaggle 実行計画（軽量→本番）
+
+`environment/kaggle_ablation/notebook.ipynb` で `LIGHT` フラグで切替。
+
+- **軽量（ゲート）**: embed=64, hidden=64, layers=1, seq=48, batch=16, time_steps=6, epochs=2, BPE vocab=512, TinyShakespeare のみ, 1 seed。全パターン NaN なく完了すれば本番へ。
+- **本番**: embed=128, hidden=512, layers=3, seq=128, batch=32, time_steps=20, epochs=5, BPE vocab=2048, WikiText-2+TinyShakespeare, 5 パターン × 3 seed, P5 は `use_distill=True`。
+
+注意: 生成ステップ（`evaluate_generation`）はプロンプトを最大 128 トークンまで 1 系列として入力するため、SNN の `max_seq_len` は 256 に固定（生成長の上限をカバー）。

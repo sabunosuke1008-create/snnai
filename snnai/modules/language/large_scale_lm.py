@@ -16,7 +16,9 @@ class LargeScaleSNNLM(nn.Module):
                  dropout=0.1, beta=0.9, threshold=1.0, learn_threshold=False,
                  output_mode='mem_mean', use_sequence_recurrent=True,
                  use_positional_encoding=True, max_seq_len=2048,
-                 use_hippocampus_gate=False, hippocampus_capacity=64, use_spiking_attention=False, num_heads=1):
+                 use_hippocampus_gate=False, hippocampus_capacity=64, use_spiking_attention=False,
+                 num_heads=1, ssa_input='spike', ssa_score_scale=None,
+                 enable_ssa_residual=True, enable_ssa_layernorm=True):
         super().__init__()
         self.vocab_size = vocab_size
         self.embed_dim = embed_dim
@@ -29,6 +31,10 @@ class LargeScaleSNNLM(nn.Module):
         self.use_spiking_attention = use_spiking_attention
         self.num_heads = num_heads
         self.max_seq_len = max_seq_len
+        self.ssa_input = ssa_input
+        self.ssa_score_scale = ssa_score_scale
+        self.enable_ssa_residual = enable_ssa_residual
+        self.enable_ssa_layernorm = enable_ssa_layernorm
 
         self.embed = nn.Embedding(vocab_size, embed_dim)
         if use_positional_encoding:
@@ -62,7 +68,10 @@ class LargeScaleSNNLM(nn.Module):
         if use_spiking_attention:
             from snnai.modules.language.spiking_attention import SpikingSelfAttention
             self.spiking_attention = SpikingSelfAttention(
-                hidden_dim=hidden_dim, num_heads=num_heads, causal=True
+                hidden_dim=hidden_dim, num_heads=num_heads, causal=True,
+                score_scale=ssa_score_scale,
+                enable_residual=enable_ssa_residual,
+                enable_layernorm=enable_ssa_layernorm,
             )
 
     def _prepare_input(self, x):
@@ -108,6 +117,18 @@ class LargeScaleSNNLM(nn.Module):
             if hasattr(module, 'mem') and module.mem is not None:
                 module.mem = None
 
+    def reset_memory(self):
+        """Clear episodic (hippocampus) memory between sequences/epochs.
+
+        Phase 6.11: without this hook the ``HippocampalMemory`` accumulates
+        episodes across every forward call and is never cleared, leaking
+        training context into validation and across epochs (and was a prime
+        suspect for the NaN/Inf seen in the all-features run). The trainer
+        calls this at the start of every epoch for both train and eval.
+        """
+        if self.use_hippocampus_gate and hasattr(self, 'hippocampus_gate'):
+            self.hippocampus_gate.reset_memory()
+
     def forward(self, x, return_spikes=False):
         """Forward pass.
 
@@ -142,7 +163,10 @@ class LargeScaleSNNLM(nn.Module):
                     all_spikes[i].append(spk)
                 cur = spk
             if self.use_spiking_attention:
-                cur = self.spiking_attention(cur)
+                if self.ssa_input == 'membrane':
+                    cur = self.spiking_attention(mems[i])
+                else:
+                    cur = self.spiking_attention(cur)
             if self.use_hippocampus_gate:
                 cur = self.hippocampus_gate(cur, store=True)
             out_cur = self.fc_out(cur)
