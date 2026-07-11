@@ -15,7 +15,8 @@ class LargeScaleSNNLM(nn.Module):
     def __init__(self, vocab_size, embed_dim=512, hidden_dim=2048, num_layers=6,
                  dropout=0.1, beta=0.9, threshold=1.0, learn_threshold=False,
                  output_mode='mem_mean', use_sequence_recurrent=True,
-                 use_positional_encoding=True, max_seq_len=2048):
+                 use_positional_encoding=True, max_seq_len=2048,
+                 use_hippocampus_gate=False, hippocampus_capacity=64):
         super().__init__()
         self.vocab_size = vocab_size
         self.embed_dim = embed_dim
@@ -24,6 +25,7 @@ class LargeScaleSNNLM(nn.Module):
         self.output_mode = output_mode
         self.use_sequence_recurrent = use_sequence_recurrent
         self.use_positional_encoding = use_positional_encoding
+        self.use_hippocampus_gate = use_hippocampus_gate
         self.max_seq_len = max_seq_len
 
         self.embed = nn.Embedding(vocab_size, embed_dim)
@@ -48,6 +50,12 @@ class LargeScaleSNNLM(nn.Module):
         self.lif_out = snn.Leaky(beta=beta, threshold=threshold,
                                  learn_threshold=learn_threshold,
                                  spike_grad=surrogate.fast_sigmoid())
+
+        if use_hippocampus_gate:
+            from snnai.modules.language.hippocampus_gate import HippocampusGate
+            self.hippocampus_gate = HippocampusGate(
+                hidden_dim=hidden_dim, capacity=hippocampus_capacity
+            )
 
     def _prepare_input(self, x):
         """Convert input to token embeddings.
@@ -125,6 +133,8 @@ class LargeScaleSNNLM(nn.Module):
                 if return_spikes:
                     all_spikes[i].append(spk)
                 cur = spk
+            if self.use_hippocampus_gate:
+                cur = self.hippocampus_gate(cur, store=True)
             out_cur = self.fc_out(cur)
             if t == 0:
                 mem_out = torch.zeros(batch_size, seq_len, self.vocab_size, device=cur.device)

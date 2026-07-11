@@ -11,6 +11,10 @@ Biological constraints are applied as penalties:
 - firing rate deviation from a target range
 - total spike count
 - energy budget
+
+Phase 6.6: The `hippocampus_gate` layer type now uses the real
+`HippocampusGate` from `snnai.modules.language.hippocampus_gate`
+(which wraps `HippocampalMemory`) instead of a placeholder.
 """
 import math
 import time
@@ -18,6 +22,8 @@ import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from snnai.modules.language.hippocampus_gate import HippocampusGate
 
 from .lm_search_space import LmArchitecture, LM_LAYER_TYPES
 
@@ -43,11 +49,8 @@ class ProxyLmLayer(nn.Module):
             self.qkv = nn.Linear(hidden_dim, hidden_dim * 3)
             self.proj = nn.Linear(hidden_dim, hidden_dim)
         elif layer_type == "hippocampus_gate":
-            self.gate = nn.Sequential(
-                nn.Linear(hidden_dim * 2, hidden_dim),
-                nn.Sigmoid(),
-            )
-            self.mem = nn.Linear(hidden_dim, hidden_dim)
+            # Phase 6.6: use the real HippocampusGate (HippocampalMemory + gate)
+            self.gate = HippocampusGate(hidden_dim=hidden_dim, capacity=64)
         elif layer_type in ("c_elegans", "honeybee", "crow", "octopus"):
             # Biological modules are modelled as fixed random projections.
             self.net = nn.Linear(hidden_dim, hidden_dim, bias=False)
@@ -86,12 +89,9 @@ class ProxyLmLayer(nn.Module):
             out = torch.bmm(attn, v)
             return self.proj(out), None
         elif self.layer_type == "hippocampus_gate":
-            mem = state["mem"] if state else torch.zeros_like(x)
-            combined = torch.cat([x, mem], dim=-1)
-            g = self.gate(combined)
-            out = g * x + (1 - g) * mem
-            new_mem = self.mem(out)
-            return out, {"mem": new_mem.detach()}
+            # Phase 6.6: delegate to real HippocampusGate (memory is internal)
+            out = self.gate(x, store=True)
+            return out, None
         else:
             return self.net(x), None
 
