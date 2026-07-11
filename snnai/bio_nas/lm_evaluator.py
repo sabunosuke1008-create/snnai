@@ -24,6 +24,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from snnai.modules.language.hippocampus_gate import HippocampusGate
+from snnai.modules.language.spiking_attention import SpikingSelfAttention
 
 from .lm_search_space import LmArchitecture, LM_LAYER_TYPES
 
@@ -46,8 +47,11 @@ class ProxyLmLayer(nn.Module):
         elif layer_type == "recurrent":
             self.net = nn.GRU(hidden_dim, hidden_dim, batch_first=True)
         elif layer_type == "attention":
-            self.qkv = nn.Linear(hidden_dim, hidden_dim * 3)
-            self.proj = nn.Linear(hidden_dim, hidden_dim)
+            # Phase 6.7: use the real SpikingSelfAttention (softmax-free
+            # spike-based attention) instead of a softmax placeholder.
+            self.attention = SpikingSelfAttention(
+                hidden_dim=hidden_dim, num_heads=1, causal=True, use_spike=True
+            )
         elif layer_type == "hippocampus_gate":
             # Phase 6.6: use the real HippocampusGate (HippocampalMemory + gate)
             self.gate = HippocampusGate(hidden_dim=hidden_dim, capacity=64)
@@ -78,16 +82,10 @@ class ProxyLmLayer(nn.Module):
             out, h = self.net(x, state["h"] if state else None)
             return out, {"h": h.detach()}
         elif self.layer_type == "attention":
-            B, L, H = x.shape
-            qkv = self.qkv(x).reshape(B, L, 3, H)
-            q, k, v = qkv.unbind(dim=2)
-            scores = torch.bmm(q, k.transpose(1, 2)) / math.sqrt(H)
-            # Causal mask for language modelling
-            mask = torch.triu(torch.ones(L, L, device=x.device), diagonal=1).bool()
-            scores.masked_fill_(mask, float("-inf"))
-            attn = F.softmax(scores, dim=-1)
-            out = torch.bmm(attn, v)
-            return self.proj(out), None
+            # Phase 6.7: delegate to real SpikingSelfAttention
+            # (softmax-free, spike-based, causal).
+            out = self.attention(x)
+            return out, None
         elif self.layer_type == "hippocampus_gate":
             # Phase 6.6: delegate to real HippocampusGate (memory is internal)
             out = self.gate(x, store=True)

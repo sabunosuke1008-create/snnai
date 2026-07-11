@@ -1,10 +1,10 @@
 {
- "id": "gihuhi/snnai-v6-6-0-bio-nas-lm-demo",
- "title": "SNNAI v6-6-1 Bio-NAS + Hippocampus Demo",
- "code_file": "notebook.ipynb",
- "language": "python",
- "kernel_type": "notebook",
- "is_private": true,
- "enable_gpu": true,
- "enable_internet": true
+  "id": "gihuhi/snnai-v6-6-2-bio-nas-lm-demo",
+  "title": "SNNAI v6-6-2 Bio-NAS + Hippocampus Demo",
+  "code_file": "notebook.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true
 }

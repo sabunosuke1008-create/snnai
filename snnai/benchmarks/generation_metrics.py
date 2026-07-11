@@ -258,12 +258,16 @@ def evaluate_generation(model, tokenizer, prompts, max_chars=100, device='cpu',
 
     bleus = [bleu_1(ref, hyp) for ref, hyp in zip(prompts, generated)]
     cers = [char_error_rate(ref, hyp) for ref, hyp in zip(prompts, generated)]
-    return {
+    result = {
         'generated': generated,
         'bleu_1_mean': sum(bleus) / max(1, len(bleus)),
         'cer_mean': sum(cers) / max(1, len(cers)),
         'avg_length': sum(len(g) for g in generated) / max(1, len(generated)),
     }
+    # Phase 6.8: grammaticality / semantic coherence / degeneration
+    quality = text_quality_metrics(generated, prompts=prompts)
+    result.update(quality)
+    return result
 
 
 def evaluate_model(model, dataloader, tokenizer, device='cpu'):
@@ -297,4 +301,173 @@ def evaluate_model(model, dataloader, tokenizer, device='cpu'):
         'loss': avg_loss,
         'ppl': math.exp(avg_loss),
         'accuracy': total_correct / max(1, total_tokens),
+    }
+
+
+def _ngrams(tokens, n):
+    """Return list of n-grams for a token list."""
+    if len(tokens) < n:
+        return []
+    return [tuple(tokens[i:i + n]) for i in range(len(tokens) - n + 1)]
+
+
+def repetition_rate(text, n=2):
+    """Fraction of n-grams that repeat (degeneration measure).
+
+    Returns 0.0 when there are no n-grams. Higher = more repetition.
+    """
+    toks = text.split()
+    grams = _ngrams(toks, n)
+    if not grams:
+        return 0.0
+    counts = Counter(grams)
+    repeated = sum(c - 1 for c in counts.values() if c > 1)
+    return repeated / len(grams)
+
+
+def newline_rate(text):
+    """Fraction of characters that are newline characters.
+
+    Normalises CRLF (\\r\\n) to LF so the result is environment-independent.
+    """
+    if not text:
+        return 0.0
+    normalized = text.replace("\r\n", "\n")
+    return normalized.count("\n") / len(normalized)
+
+
+def topic_drift_rate(text):
+    """KL divergence of unigram dist between first/second halves.
+
+    Higher = more topic drift within the generated passage. Returns
+    0.0 for very short passages.
+    """
+    toks = text.split()
+    if len(toks) < 4:
+        return 0.0
+    mid = len(toks) // 2
+    a, b = toks[:mid], toks[mid:]
+    ca, cb = Counter(a), Counter(b)
+    vocab = set(ca) | set(cb)
+    pa = [ca.get(t, 0) / len(a) for t in vocab]
+    pb = [cb.get(t, 0) / len(b) for t in vocab]
+    s = 1e-10
+    kl = sum(p * math.log((p + s) / (q + s)) for p, q in zip(pa, pb) if p > 0)
+    return float(kl)
+
+
+def _ger_heuristic(text):
+    """Lightweight grammar-error proxy (no external deps).
+
+    Returns an estimated error rate in [0, 1] based on simple
+    punctuation / capitalisation heuristics.
+    """
+    if not text.strip():
+        return 0.0
+    errors = 0
+    total = 0
+    for s in text.replace("\n", " ").split("."):
+        s = s.strip()
+        if not s:
+            continue
+        total += 1
+        if not s[0].isupper():
+            errors += 1
+        if "  " in s:
+            errors += 1
+        if " ." in s or " ," in s:
+            errors += 1
+    return errors / max(1, total)
+
+
+def _semantic_self_similarity(text, prompt=None):
+    """Token-set self-similarity proxy (no external deps)."""
+    if prompt is not None:
+        ps = set(prompt.lower().split())
+        gs = set(text.lower().split())
+        if not ps or not gs:
+            return 0.0
+        return len(ps & gs) / len(ps | gs)
+    toks = text.split()
+    grams = _ngrams(toks, 2)
+    if not grams:
+        return 0.0
+    return len(set(grams)) / len(grams)
+
+
+def grammar_error_rate(text, use_spacy=False, use_language_tool=False):
+    """Grammar error rate (GER).
+
+    Uses spacy / language_tool_python when available; otherwise a
+    dependency-free heuristic proxy. Heavy NLP libs are opt-in.
+    """
+    if use_spacy or use_language_tool:
+        try:
+            return _ger_external(text, use_spacy=use_spacy,
+                                use_language_tool=use_language_tool)
+        except Exception:
+            pass
+    return _ger_heuristic(text)
+
+
+def _ger_external(text, use_spacy=False, use_language_tool=False):
+    """GER via external NLP libraries (opt-in, may raise)."""
+    if use_language_tool:
+        import language_tool_python as lt
+        tool = lt.LanguageTool("en-US")
+        return len(tool.check(text)) / max(1, len(text.split()))
+    import spacy
+    nlp = spacy.load("en_core_web_sm")
+    doc = nlp(text)
+    errors = sum(1 for tok in doc if tok.dep_ == "ROOT" and tok.head == tok)
+    return errors / max(1, len(doc))
+
+
+def semantic_similarity(text, prompt=None, use_sentence_transformers=False):
+    """Semantic self-similarity.
+
+    Uses sentence-transformers when available; otherwise a
+    token-overlap proxy. Heavy deps are opt-in.
+    """
+    if use_sentence_transformers:
+        try:
+            from sentence_transformers import SentenceTransformer
+            model = SentenceTransformer("all-MiniLM-L6-v2")
+            if prompt is None:
+                return 0.0
+            e1, e2 = model.encode([prompt, text])
+            sim = F.cosine_similarity(
+                torch.tensor(e1), torch.tensor(e2), dim=0
+            ).item()
+            return float(sim)
+        except Exception:
+            pass
+    return _semantic_self_similarity(text, prompt=prompt)
+
+
+def text_quality_metrics(generated, prompts=None,
+                        use_spacy=False, use_language_tool=False,
+                        use_sentence_transformers=False):
+    """Phase 6.8 expanded generation-quality metrics.
+
+    Returns a dict with grammaticality, semantic coherence and
+    degeneration measures that complement perplexity / BLEU-1 / CER.
+    All sub-metrics are pure-Python by default so they always run
+    (including on Kaggle CPU); heavy NLP libs are opt-in.
+    """
+    ger = [grammar_error_rate(g, use_spacy=use_spacy,
+                            use_language_tool=use_language_tool)
+          for g in generated]
+    sims = [semantic_similarity(g, prompt=p,
+                              use_sentence_transformers=use_sentence_transformers)
+             for g, p in zip(generated, prompts or [None] * len(generated))]
+    drifts = [topic_drift_rate(g) for g in generated]
+    reps = [repetition_rate(g) for g in generated]
+    nl = [newline_rate(g) for g in generated]
+    return {
+        'ger_mean': sum(ger) / max(1, len(ger)),
+        'semantic_sim_mean': sum(sims) / max(1, len(sims)),
+        'topic_drift_mean': sum(drifts) / max(1, len(drifts)),
+        'repetition_rate_mean': sum(reps) / max(1, len(reps)),
+        'newline_rate_mean': sum(nl) / max(1, len(nl)),
     }

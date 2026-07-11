@@ -16,7 +16,7 @@ class LargeScaleSNNLM(nn.Module):
                  dropout=0.1, beta=0.9, threshold=1.0, learn_threshold=False,
                  output_mode='mem_mean', use_sequence_recurrent=True,
                  use_positional_encoding=True, max_seq_len=2048,
-                 use_hippocampus_gate=False, hippocampus_capacity=64):
+                 use_hippocampus_gate=False, hippocampus_capacity=64, use_spiking_attention=False, num_heads=1):
         super().__init__()
         self.vocab_size = vocab_size
         self.embed_dim = embed_dim
@@ -26,6 +26,8 @@ class LargeScaleSNNLM(nn.Module):
         self.use_sequence_recurrent = use_sequence_recurrent
         self.use_positional_encoding = use_positional_encoding
         self.use_hippocampus_gate = use_hippocampus_gate
+        self.use_spiking_attention = use_spiking_attention
+        self.num_heads = num_heads
         self.max_seq_len = max_seq_len
 
         self.embed = nn.Embedding(vocab_size, embed_dim)
@@ -55,6 +57,12 @@ class LargeScaleSNNLM(nn.Module):
             from snnai.modules.language.hippocampus_gate import HippocampusGate
             self.hippocampus_gate = HippocampusGate(
                 hidden_dim=hidden_dim, capacity=hippocampus_capacity
+            )
+
+        if use_spiking_attention:
+            from snnai.modules.language.spiking_attention import SpikingSelfAttention
+            self.spiking_attention = SpikingSelfAttention(
+                hidden_dim=hidden_dim, num_heads=num_heads, causal=True
             )
 
     def _prepare_input(self, x):
@@ -133,6 +141,8 @@ class LargeScaleSNNLM(nn.Module):
                 if return_spikes:
                     all_spikes[i].append(spk)
                 cur = spk
+            if self.use_spiking_attention:
+                cur = self.spiking_attention(cur)
             if self.use_hippocampus_gate:
                 cur = self.hippocampus_gate(cur, store=True)
             out_cur = self.fc_out(cur)
