@@ -87,7 +87,8 @@ def check_newline_escapes(nb_path):
     return errors
 
 
-def check_metadata_consistency(nb_path, meta_path, expected_version_slug=None):
+def check_metadata_consistency(nb_path, meta_path, expected_version_slug=None,
+                               expected_version=None):
     """Verify kernel-metadata vs notebook title + first markdown."""
     nb_path = Path(nb_path)
     meta_path = Path(meta_path)
@@ -103,13 +104,15 @@ def check_metadata_consistency(nb_path, meta_path, expected_version_slug=None):
             errors.append(f"code_file '{code_file}' does not exist next to notebook")
 
     title = meta.get("title", "")
-    if expected_version_slug and expected_version_slug not in title:
+    if expected_version_slug and expected_version_slug not in title \
+            and expected_version not in title:
         errors.append(
-            f"kernel-metadata title '{title}' missing version slug "
-            f"'{expected_version_slug}'"
+            f"kernel-metadata title '{title}' missing version "
+            f"'{expected_version}' or slug '{expected_version_slug}'"
         )
 
-    # First markdown cell title should mention the same version slug.
+    # First markdown cell title should mention the same version (dotted or
+    # slug form both accepted).
     first_md = None
     for cell in nb.get("cells", []):
         if cell.get("cell_type") == "markdown":
@@ -119,10 +122,10 @@ def check_metadata_consistency(nb_path, meta_path, expected_version_slug=None):
             first_md = src
             break
     if expected_version_slug and first_md is not None:
-        if expected_version_slug not in first_md:
+        if expected_version_slug not in first_md and expected_version not in first_md:
             errors.append(
-                f"first markdown title missing version slug "
-                f"'{expected_version_slug}'"
+                f"first markdown title missing version "
+                f"'{expected_version}' or slug '{expected_version_slug}'"
             )
     return errors
 
@@ -152,7 +155,9 @@ def main():
     nl_errs = check_newline_escapes(nb_path)
     for e in nl_errs:
         print(f"  [NEWLINE] {e}")
-    meta_errs = check_metadata_consistency(nb_path, meta_path, slug)
+    meta_errs = check_metadata_consistency(
+        nb_path, meta_path, slug, expected_version=version
+    )
     for e in meta_errs:
         print(f"  [METADATA] {e}")
 
