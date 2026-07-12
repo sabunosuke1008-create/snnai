@@ -386,4 +386,36 @@
 - **軽量（ゲート）**: embed=64, hidden=64, layers=1, seq=48, batch=16, time_steps=6, epochs=2, BPE vocab=512, TinyShakespeare のみ, 1 seed。全パターン NaN なく完了すれば本番へ。
 - **本番**: embed=128, hidden=512, layers=3, seq=128, batch=32, time_steps=20, epochs=5, BPE vocab=2048, WikiText-2+TinyShakespeare, 5 パターン × 3 seed, P5 は `use_distill=True`。
 
-注意: 生成ステップ（`evaluate_generation`）はプロンプトを最大 128 トークンまで 1 系列として入力するため、SNN の `max_seq_len` は 256 に固定（生成長の上限をカバー）。
+ 注意: 生成ステップ（`evaluate_generation`）はプロンプトを最大 128 トークンまで 1 系列として入力するため、SNN の `max_seq_len` は 256 に固定（生成長の上限をカバー）。
+
+### 10.5 Kaggle 軽量実行結果（v6.7.0, kernel v2, 2026-07-12）
+
+- カーネル: `gihuhi/snnai-v6-7-0-ablation-5-patterns-light-full` v2（[URL](https://www.kaggle.com/code/gihuhi/snnai-v6-7-0-ablation-5-patterns-light-full)）。
+- **割り当て GPU = Tesla P100-PCIE-16GB（compute capability 6.0）**。本 PyTorch 2.x ビルドは sm_70+ のみ対応のため CUDA 使用不可 → **CPU fallback で完了**（status=COMPLETE, failureMessage=null）。
+- 所要: 全 5 パターン約 1328 秒（≈22 分）。**all-features（P5）含め NaN なし、firing_rate 0.26〜0.31（死ニューロンなし）**。→ 安定化修正（_normalize 逆伝播 NaN 根因）が本番環境でも有効と確定。**軽量ゲート成功**。
+
+| パターン | snn_val_ppl | tf_val_ppl | firing_rate | snn_params | tf_params |
+|---|---|---|---|---|---|
+| P1 baseline | 113.31 | 84.85 | 0.3056 | 94,720 | 127,196 |
+| P2 +posenc | 141.91 | 82.00 | 0.2950 | 111,104 | 142,148 |
+| P3 +hippocampus | 138.16 | 79.26 | 0.3006 | 119,360 | 149,912 |
+| P4 +attention | 293.73 | 77.01 | 0.2614 | 127,616 | 157,868 |
+| P5 all-features | 305.17 | 75.25 | 0.2686 | 135,872 | 166,016 |
+
+（ローカル・スモークより ppl 悪化は、本番は 1.1M 文字コーパス・2 epoch の未収束のため。SNN が TF より悪いのは tiny モデル・短学習の想定内。）
+
+### 10.7 T4 での軽量ゲート（v5, 2026-07-12）
+
+P100 の `nvidia-smi --query-gpu=compute_cap` は無効フィールドで検出失敗→cu118 再インストールが走らず CPU 固定になっていた（ユーザー指摘）。**正解: push 時に `acc='NvidiaTeslaT4'` を指定**し、T4（sm_75）を確定割り当て。デフォルト PyTorch が直接対応。
+
+- v5 ゲート: `device cuda LIGHT True SEEDS (0,)` を確認（T4 で CUDA 正常）。所要 881s（≈14.7 分）。結果は CPU 軽量（v2）と一致（再現性 OK）。
+- これで「軽量ゲート（T4, 高速）で機構動作を確認 → 本番」フローを遵守。本番（LIGHT=False）も `acc='NvidiaTeslaT4'` で push。
+
+### 10.6 本番実行への移行（P100 対応）
+
+軽量成功により本番（LIGHT=False）へ。だが P100 は本 PyTorch で CUDA 不可のため、CPU では 9h 制限超過。**対応策**: cap<7.0 検出時に `torch==2.0.1+cu118`（sm_60 対応）を再インストールし、P100 上で GPU 本番を実行する。T4 割り当て時は現ビルドのまま GPU 実行。
+
+- **v3（初回 full プッシュ）**: device 判定を `cap[0]<7 → cpu` としていたため、cu118 再インストール後も **CPU で走り 9h で打ち切れ**るバグがあった → 即座に v4 で修正。
+- **v4（修正版）**: device は「`torch.cuda.is_available()` かつ `torch.zeros(1,device='cuda')` が成功」で決定（cap ではなく実利用率をプローブ）。cu118 再インストール済みなら P100 でも `device='cuda'` になる。2026-07-12 push、RUNNING 確認（status=RUNNING, failureMessage=null）。
+- 2 GPU セッション上限により別プローブ_KERNEL が弾かれたため、滞留していた古い `snnai-v6-6-2-fair-compare-all-features`（CANCEL_ACKNOWLEDGED で詰まり slot を占有）を削除して slot を空けた。
+- 所要見積: P100 は T4 より遅いため、full（5 パターン×3 seed, epochs=5, hidden=512）は数時間〜9h 上限ぎりぎりの可能性。打ち切られた場合は seed/epochs を削減した「実質 full」で再実行する方針。

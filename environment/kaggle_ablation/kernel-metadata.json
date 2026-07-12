@@ -1,13 +1,10 @@
 {
-  "id": "gihuhi/snnai-v6-7-0-ablation",
-  "title": "SNNAI v6.7.0 ablation (5 patterns, light/full)",
-  "code_file": "notebook.ipynb",
-  "language": "python",
-  "kernel_type": "notebook",
-  "is_private": false,
-  "enable_gpu": true,
-  "enable_internet": true,
-  "dataset_sources": [],
-  "competition_sources": [],
-  "kernel_sources": []
+ "code_file": "notebook.ipynb",
+ "enable_gpu": true,
+ "enable_internet": true,
+ "id": "gihuhi/snnai-v6-7-0-ablation-5-patterns-full-3-seed",
+ "is_private": false,
+ "kernel_type": "notebook",
+ "language": "python",
+ "title": "SNNAI v6.7.0 ablation (T4, full 3-seed)"
 }
